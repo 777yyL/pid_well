@@ -1,0 +1,50 @@
+services:
+  app:
+    image: ${APP_IMAGE:-tender-agent-workspace:test}
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4317:4317"
+    environment:
+      DATABASE_URL: postgres://tender:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/tender
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set a 64-character hex key in .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      MAX_CONCURRENT_RUNS: ${MAX_CONCURRENT_RUNS:-2}
+      MAX_AGENT_TURNS: ${MAX_AGENT_TURNS:-40}
+      MAX_TOTAL_AGENT_TURNS: ${MAX_TOTAL_AGENT_TURNS:-400}
+      MAX_NO_PROGRESS_TURNS: ${MAX_NO_PROGRESS_TURNS:-12}
+      RUN_TIMEOUT_MS: ${RUN_TIMEOUT_MS:-1800000}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - app-data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    environment:
+      POSTGRES_DB: tender
+      POSTGRES_USER: tender
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tender -d tender"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+volumes:
+  app-data:
+  postgres-data:

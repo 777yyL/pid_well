@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+data/
+backups/
+coverage/
+*.log
+task_plan.md
+findings.md
+progress.md
+llm_wiki
