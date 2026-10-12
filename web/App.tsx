@@ -30,7 +30,16 @@ import { Team } from "./Team";
 import { Account } from "./Account";
 import { Chat } from "./Chat";
 import { Workpane } from "./Workpane";
+import { SharedResult } from "./SharedResult";
 export function App() {
+  const match = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
+  return match ? (
+    <SharedResult token={encodeURIComponent(match[1])} />
+  ) : (
+    <AuthenticatedApp />
+  );
+}
+function AuthenticatedApp() {
   const [auth, setAuth] = useState<{
     user: User | null;
     needsSetup: boolean;

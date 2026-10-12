@@ -11,6 +11,7 @@ import { openDatabase, migrate, type Database } from "./db.js";
 import { attachAuth } from "./auth.js";
 import { routes } from "./api.js";
 import { AgentRunner } from "./agent.js";
+import { shareRoutes } from "./shares.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
     logger: {
@@ -20,6 +21,17 @@ export async function createApp(db: Database, serveWeb = false) {
         "req.headers.cookie",
         "res.headers.set-cookie",
       ],
+      serializers: {
+        req: (request) => ({
+          method: request.method,
+          url: request.url?.replace(
+            /(\/(?:share|api\/shared)\/)[A-Za-z0-9_-]+/g,
+            "$1[redacted]",
+          ),
+          hostname: request.hostname,
+          remoteAddress: request.ip,
+        }),
+      },
     },
     bodyLimit: 2 * 1024 * 1024,
   });
@@ -39,6 +51,7 @@ export async function createApp(db: Database, serveWeb = false) {
   });
   const runner = new AgentRunner(db);
   routes(app, db, runner);
+  shareRoutes(app, db);
   app.setErrorHandler((error, request, reply) => {
     const dbCode = (error as { code?: string }).code;
     if (error instanceof ZodError) {
@@ -64,10 +77,16 @@ export async function createApp(db: Database, serveWeb = false) {
       error: status === 500 ? "服务处理失败，请重试" : (error as Error).message,
     });
   });
-  app.addHook("onSend", async (_request, reply, payload) => {
+  app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("X-Frame-Options", "DENY");
-    reply.header("Referrer-Policy", "same-origin");
+    reply.header(
+      "Referrer-Policy",
+      request.url.startsWith("/share/") ||
+        request.url.startsWith("/api/shared/")
+        ? "no-referrer"
+        : "same-origin",
+    );
     return payload;
   });
   if (serveWeb) {

@@ -421,6 +421,11 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       409,
     );
     await assert.rejects(() => createReport(db, projectId, "xlsx"), /已复核/);
+    assert.equal(
+      (await request("POST", `/api/projects/${projectId}/shares`, { days: 30 }))
+        .statusCode,
+      409,
+    );
     const rows = await assessmentRows(db, projectId);
     assert.equal(rows[0].reviewed, false);
     const update = await request(
@@ -460,13 +465,22 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       await workbook.xlsx.readFile(
         resolve(config.dataDir, "artifacts", record.storage_name),
       );
-      assert.equal(workbook.worksheets.length, 3);
+      assert.deepEqual(
+        workbook.worksheets.map((sheet) => sheet.name),
+        [
+          "评估概览",
+          "功能点匹配报告",
+          "销售项清单",
+          "销售项技术明细",
+          "证据与版本",
+        ],
+      );
       assert.equal(
-        workbook.worksheets[0].getRow(2).getCell(10).value,
+        workbook.getWorksheet("功能点匹配报告")!.getRow(2).getCell(10).value,
         "人工核验了三个子能力与销售项原文",
       );
       assert.equal(
-        workbook.worksheets[1].getRow(2).getCell(5).value,
+        workbook.getWorksheet("销售项清单")!.getRow(2).getCell(5).value,
         raw + "\n第二行：支持设备管理",
       );
       assert.equal(record.manifest.requirements[0].revision, 2);
@@ -528,6 +542,174 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         /缺少交付依赖/,
       );
       await saveAssessments(db, projectId, [item], { human: true });
+    },
+  );
+  await t.test(
+    "只读成果分享：匿名查看下载、版本冻结、项目隔离、到期与撤销",
+    async () => {
+      const expectedNote = (await assessmentRows(db, projectId))[0].note;
+      const endpoint = `/api/projects/${projectId}/shares`;
+      assert.equal(
+        (
+          await app.inject({
+            method: "POST",
+            url: endpoint,
+            headers,
+            payload: { days: 30 },
+          })
+        ).statusCode,
+        401,
+      );
+      assert.equal(
+        (await request("POST", endpoint, { days: 0 })).statusCode,
+        400,
+      );
+      const created = await request("POST", endpoint, { days: 30 });
+      assert.equal(created.statusCode, 200, created.body);
+      const link = created.json(),
+        token = new URL(link.url).pathname.split("/").at(-1);
+      const publicUrl = `/api/shared/${token}`;
+      const opened = await app.inject({ url: publicUrl });
+      assert.equal(opened.statusCode, 200, opened.body);
+      assert.equal(opened.headers["referrer-policy"], "no-referrer");
+      const frozen = opened.json();
+      assert.equal(frozen.files.length, 3);
+      assert.equal(frozen.rows[0].note, expectedNote);
+      for (const secret of [
+        "modelApiKey",
+        "storage_name",
+        "conversations",
+        "documents",
+        "token_cipher",
+      ])
+        assert(!opened.body.includes(`"${secret}"`));
+      for (const file of frozen.files) {
+        const downloaded = await app.inject({
+          url: `${publicUrl}/artifacts/${file.id}`,
+        });
+        assert.equal(downloaded.statusCode, 200);
+        assert.match(
+          String(downloaded.headers["content-disposition"]),
+          /attachment/,
+        );
+        assert.equal(
+          (await app.inject({ url: `/api/artifacts/${file.id}` })).statusCode,
+          401,
+        );
+      }
+      const manifests = await db.query<{
+        manifest: { generatedAt: string; requirements: { revision: number }[] };
+      }>("SELECT manifest FROM artifacts WHERE id=ANY($1::uuid[])", [
+        frozen.files.map((file: { id: string }) => file.id),
+      ]);
+      assert(
+        manifests.every(
+          (file) => file.manifest.generatedAt === frozen.generatedAt,
+        ),
+      );
+      const privateFile = await createReport(db, projectId, "xlsx");
+      assert.equal(
+        (await app.inject({ url: `${publicUrl}/artifacts/${privateFile.id}` }))
+          .statusCode,
+        404,
+      );
+      assert.equal(
+        (await app.inject({ url: `/api/documents/${documentId}/source` }))
+          .statusCode,
+        401,
+      );
+      const before = (await assessmentRows(db, projectId))[0];
+      await saveAssessments(
+        db,
+        projectId,
+        [{ ...before, note: "分享后修改的说明" }],
+        { human: true },
+      );
+      assert.equal(
+        (await app.inject({ url: publicUrl })).json().rows[0].note,
+        frozen.rows[0].note,
+      );
+      const reportFile = frozen.files.find(
+        (file: { kind: string; format: string }) =>
+          file.kind === "full" && file.format === "xlsx",
+      );
+      const downloaded = await app.inject({
+        url: `${publicUrl}/artifacts/${reportFile.id}`,
+      });
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(
+        downloaded.rawPayload as unknown as Parameters<
+          typeof workbook.xlsx.load
+        >[0],
+      );
+      assert.equal(
+        workbook.getWorksheet("功能点匹配报告")!.getRow(2).getCell(10).value,
+        frozen.rows[0].note,
+      );
+      await saveAssessments(db, projectId, [before], { human: true });
+      await request("POST", "/api/users", {
+        username: "share_outsider",
+        password: "isolated-test-password",
+        displayName: "分享隔离测试",
+      });
+      const login = await app.inject({
+        method: "POST",
+        url: "/api/auth/login",
+        headers,
+        payload: {
+          username: "share_outsider",
+          password: "isolated-test-password",
+        },
+      });
+      const outsiderCookie = String(login.headers["set-cookie"]).split(";")[0];
+      assert.equal(
+        (await request("GET", endpoint, undefined, outsiderCookie)).statusCode,
+        404,
+      );
+      assert.equal(
+        (
+          await request(
+            "POST",
+            `${endpoint}/${link.id}/revoke`,
+            {},
+            outsiderCookie,
+          )
+        ).statusCode,
+        404,
+      );
+      assert.equal(
+        (await request("POST", `${endpoint}/${link.id}/revoke`)).statusCode,
+        200,
+      );
+      assert.equal((await app.inject({ url: publicUrl })).statusCode, 404);
+      assert.equal(
+        (await app.inject({ url: `${publicUrl}/artifacts/${reportFile.id}` }))
+          .statusCode,
+        404,
+      );
+      const expiring = (await request("POST", endpoint, { days: 1 })).json();
+      await db.query(
+        "UPDATE result_shares SET expires_at=now()-interval '1 second' WHERE id=$1",
+        [expiring.id],
+      );
+      const expiredToken = new URL(expiring.url).pathname.split("/").at(-1);
+      assert.equal(
+        (await app.inject({ url: `/api/shared/${expiredToken}` })).statusCode,
+        404,
+      );
+      assert.equal(
+        (await app.inject({ url: "/api/shared/not-a-token" })).statusCode,
+        404,
+      );
+      const managed = await request("GET", endpoint);
+      assert(
+        managed
+          .json()
+          .some(
+            (item: { id: string; revoked_at: string }) =>
+              item.id === link.id && item.revoked_at,
+          ),
+      );
     },
   );
   await t.test("解析多表 Excel、文本及明确的格式错误", async () => {

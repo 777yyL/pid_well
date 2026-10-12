@@ -8,6 +8,12 @@ import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import { collectSales, salesHeaders } from "./sale-entity.js";
 import { productScope } from "./product-scope.js";
+import {
+  styleTable,
+  addOverview,
+  addSalesDetails,
+  renderReportHtml,
+} from "./report-layout.js";
 export const safeCell = (value: unknown) => {
   const text = String(value ?? "");
   return /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
@@ -20,19 +26,15 @@ export const escapeHtml = (value: unknown) =>
         char
       ]!,
   );
-export async function createReport(
-  db: Database,
-  projectId: string,
-  format: "xlsx" | "csv" | "html",
-  kind: "full" | "sales" = "full",
-) {
-  if (kind === "sales" && format !== "xlsx")
-    throw new AppError(400, "销售项清单使用 XLSX 模板格式");
-  const snapshot = await db.transaction(async (tx) => {
-    const [project] = await tx.query<{ name: string; wiki_project_id: string }>(
-      "SELECT name,wiki_project_id FROM projects WHERE id=$1",
-      [projectId],
-    );
+export async function captureReport(db: Database, projectId: string) {
+  return db.transaction(async (tx) => {
+    await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+    const [project] = await tx.query<{
+      id: string;
+      name: string;
+      wiki_project_id: string;
+    }>("SELECT id,name,wiki_project_id FROM projects WHERE id=$1", [projectId]);
+    if (!project) throw new AppError(404, "项目不存在");
     const requirements = await tx.query<{ id: string; confirmed: boolean }>(
       "SELECT id,confirmed FROM requirements WHERE project_id=$1",
       [projectId],
@@ -74,8 +76,23 @@ export async function createReport(
       pages,
       docs,
       scope: await productScope(tx, projectId),
+      generatedAt: new Date().toISOString(),
     };
   });
+}
+export type ReportSnapshot = Awaited<ReturnType<typeof captureReport>>;
+export async function createReport(
+  db: Database,
+  projectId: string,
+  format: "xlsx" | "csv" | "html",
+  kind: "full" | "sales" = "full",
+  frozen?: ReportSnapshot,
+) {
+  if (kind === "sales" && format !== "xlsx")
+    throw new AppError(400, "销售项清单使用 XLSX 模板格式");
+  const snapshot = frozen ?? (await captureReport(db, projectId));
+  if (snapshot.project.id !== projectId)
+    throw new AppError(400, "报告项目不一致");
   const { project, rows, pages, docs } = snapshot;
   const sales = collectSales(rows, pages);
   const saleRows = sales.map(({ entity, requirements }, index) => {
@@ -137,7 +154,7 @@ export async function createReport(
       row.requirement_raw,
       sale,
       row.evidence.map((e) => e.quote).join("\n"),
-      row.level,
+      { exact: "完全满足", partial: "部分满足", no_match: "不满足" }[row.level],
       row.ok.join("\n"),
       row.hard.join("\n"),
       row.no.join("\n"),
@@ -156,7 +173,7 @@ export async function createReport(
   const manifest = {
     projectId,
     wikiProjectId: project.wiki_project_id,
-    generatedAt: new Date().toISOString(),
+    generatedAt: snapshot.generatedAt,
     kind,
     productScope: snapshot.scope,
     sales: sales.map(({ entity, page, requirements }) => ({
@@ -185,70 +202,13 @@ export async function createReport(
     const book = new ExcelJS.Workbook();
     book.creator = "标研";
     book.created = new Date();
+    if (kind === "full") addOverview(book, snapshot, sales.length);
     const sheet = book.addWorksheet("功能点匹配报告", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
     sheet.addRow(headers);
     details.forEach((row) => sheet.addRow(row.map(safeCell)));
-    sheet.columns.forEach((col, index) => {
-      col.width = [2, 4, 9, 10].includes(index) ? 50 : 22;
-    });
-    sheet.eachRow((row, index) => {
-      row.alignment = { vertical: "top", wrapText: true };
-      row.eachCell((cell) => {
-        cell.font = { name: "微软雅黑", size: 10 };
-        if (index === 1) {
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFD9E1F2" },
-          };
-          cell.font = { name: "微软雅黑", bold: true, size: 10 };
-        } else {
-          const level = row.getCell(6).value;
-          if (level === "partial" || level === "no_match")
-            cell.fill = {
-              type: "pattern",
-              pattern: "solid",
-              fgColor: { argb: level === "partial" ? "FFFFEB9C" : "FFFFC7CE" },
-            };
-        }
-      });
-    });
-    sheet.eachRow((row, index) => {
-      if (index === 1) return;
-      const assessment = rows.find(
-        (r) => r.requirementId === row.getCell(1).value,
-      );
-      const words = [
-        ...new Set(
-          assessment?.ok.filter(
-            (word) => word.length > 1 && word.length < 100,
-          ) ?? [],
-        ),
-      ].sort((a, b) => b.length - a.length);
-      if (!words.length) return;
-      const text = String(row.getCell(5).value ?? "");
-      const pattern = new RegExp(
-        `(${words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
-        "g",
-      );
-      row.getCell(5).value = {
-        richText: text
-          .split(pattern)
-          .filter(Boolean)
-          .map((part) => ({
-            text: part,
-            font: words.includes(part)
-              ? { bold: true, color: { argb: "FFCC0000" } }
-              : { name: "微软雅黑", size: 10 },
-          })),
-      };
-    });
-    sheet.autoFilter = {
-      from: { row: 1, column: 1 },
-      to: { row: 1, column: 11 },
-    };
+    styleTable(sheet, [12, 18, 52, 30, 58, 14, 30, 30, 30, 48, 40], 6);
     const salesSheet = book.addWorksheet("销售项清单", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -264,51 +224,11 @@ export async function createReport(
         ),
       ),
     );
-    salesSheet.columns.forEach(
-      (col, index) =>
-        (col.width =
-          index === 4 ? 110 : index === 9 ? 80 : index === 1 ? 30 : 22),
-    );
-    salesSheet.eachRow((row, index) => {
-      row.alignment = { vertical: "top", wrapText: true };
-      row.font = { name: "等线", size: 11, bold: index === 1 };
-      const wrappedLines =
-        index === 1
-          ? 1
-          : Math.max(
-              ...Array.from({ length: 10 }, (_, i) => {
-                const text = String(row.getCell(i + 1).value ?? "");
-                const width = salesSheet.getColumn(i + 1).width ?? 22;
-                return text
-                  .split("\n")
-                  .reduce(
-                    (sum, line) =>
-                      sum +
-                      Math.max(
-                        1,
-                        Math.ceil(
-                          [...line].reduce(
-                            (n, c) => n + (/[\u3000-\u9fff]/.test(c) ? 2 : 1),
-                            0,
-                          ) / width,
-                        ),
-                      ),
-                    0,
-                  );
-              }),
-            );
-      row.height =
-        index === 1 ? 28 : Math.min(409, Math.max(48, wrappedLines * 16 + 12));
-      row.eachCell((cell) => {
-        cell.border = {
-          top: { style: "thin", color: { argb: "FFD9DFDC" } },
-          bottom: { style: "thin", color: { argb: "FFD9DFDC" } },
-          left: { style: "thin", color: { argb: "FFD9DFDC" } },
-          right: { style: "thin", color: { argb: "FFD9DFDC" } },
-        };
-      });
-    });
-    salesSheet.autoFilter = "A1:J1";
+    addSalesDetails(book, sales, salesSheet);
+    styleTable(salesSheet, [9, 30, 26, 28, 58, 9, 11, 15, 17, 58]);
+    for (const column of [7, 8, 9])
+      salesSheet.getColumn(column).numFmt =
+        column === 7 ? "#,##0.##" : "#,##0.00";
     const provenance = book.addWorksheet("证据与版本");
     provenance.addRow(["报告 ID", id]);
     provenance.addRow(["知识库项目", project.wiki_project_id]);
@@ -336,7 +256,7 @@ export async function createReport(
         `${s.requirements.join("、")} / ${s.snapshotId}`,
       ]),
     );
-    provenance.columns.forEach((c) => (c.width = 45));
+    styleTable(provenance, [36, 64, 64]);
     if (kind === "sales") book.removeWorksheet(sheet.id);
     buffer = Buffer.from(await book.xlsx.writeBuffer());
   } else if (format === "csv") {
@@ -350,21 +270,7 @@ export async function createReport(
       "utf8",
     );
   } else {
-    const stats = ["exact", "partial", "no_match"]
-      .map(
-        (level) =>
-          `${{ exact: "完全满足", partial: "部分满足", no_match: "不满足" }[level]} ${rows.filter((r) => r.level === level).length}`,
-      )
-      .join(" · ");
-    const body = details
-      .map(
-        (row) =>
-          `<tr class="${row[5]}">${row.map((v) => `<td>${escapeHtml(v)}</td>`).join("")}</tr>`,
-      )
-      .join("");
-    buffer = Buffer.from(
-      `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(project.name)} · 评估报告</title><style>body{font:14px/1.7 sans-serif;margin:32px;color:#24352f}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:10px;white-space:pre-wrap;vertical-align:top}th{background:#edf3f0}.partial{background:#fff8dc}.no_match{background:#ffe9e7}pre{white-space:pre-wrap;font-size:11px}h1{font-size:26px}@media print{body{margin:0}}</style><h1>${escapeHtml(project.name)} · 招标评估报告</h1><p>${escapeHtml(stats)}</p><p>报告 ID：${id} · 生成时间：${escapeHtml(manifest.generatedAt)}</p><table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table><h2>销售项清单</h2><table><thead><tr>${salesHeaders.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead><tbody>${saleRows.map((row) => `<tr>${row.map((v) => `<td>${escapeHtml(v)}</td>`).join("")}</tr>`).join("")}</tbody></table><h2>五项依据</h2>${rows.map((r) => `<h3>${r.requirementId}</h3><pre>${escapeHtml(JSON.stringify(r.criteria, null, 2))}</pre>`).join("")}<h2>追溯信息</h2><pre>${escapeHtml(JSON.stringify(manifest, null, 2))}</pre></html>`,
-    );
+    buffer = Buffer.from(renderReportHtml(snapshot, id), "utf8");
   }
   const dir = resolve(config.dataDir, "artifacts");
   await mkdir(dir, { recursive: true });

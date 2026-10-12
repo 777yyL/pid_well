@@ -7,6 +7,26 @@ const env = z
   .object({
     HOST: z.string().default("127.0.0.1"),
     PORT: z.coerce.number().int().min(1).max(65535).default(4317),
+    PUBLIC_BASE_URL: z
+      .string()
+      .default("")
+      .refine((value) => {
+        if (!value) return true;
+        try {
+          const url = new URL(value);
+          return (
+            ["http:", "https:"].includes(url.protocol) &&
+            !url.username &&
+            !url.password &&
+            !url.search &&
+            !url.hash &&
+            url.pathname === "/"
+          );
+        } catch {
+          return false;
+        }
+      }, "PUBLIC_BASE_URL 必须为 HTTP/HTTPS 访问入口，不能包含路径或凭据")
+      .transform((value) => value.replace(/\/$/, "")),
     DATA_DIR: z.string().default("./data"),
     DATABASE_URL: z.string().default(""),
     COOKIE_SECURE: z.enum(["true", "false"]).default("false"),

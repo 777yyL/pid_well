@@ -36,6 +36,7 @@ import type { WorkspaceData } from "./useWorkspace";
 import { api, post } from "./api";
 import { Markdown } from "./Chat";
 import { ProductSelection } from "./ProductSelection";
+import { ShareDialog } from "./ShareDialog";
 const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
@@ -505,6 +506,18 @@ export function Workpane({
             导出报告
           </Button>
         </Dropdown>
+      </div>
+      <div className="share-entry">
+        <ShareDialog
+          projectId={workspace.project.id}
+          enabled={
+            complete &&
+            !workspace.runs.some((run) =>
+              ["queued", "running"].includes(run.status),
+            )
+          }
+          onRefresh={onRefresh}
+        />
       </div>
       {workspace.artifacts.length > 0 && (
         <div className="artifact-list">

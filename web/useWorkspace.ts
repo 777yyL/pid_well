@@ -7,6 +7,7 @@ import type {
   RunEvent,
 } from "../shared/domain";
 import { api, post } from "./api";
+import { createRequestId } from "./request-id";
 export type WorkspaceData = Workspace & {
   artifacts: { id: string; name: string; format: string; created_at: string }[];
   findings: {
@@ -177,7 +178,7 @@ export function useWorkspace() {
         pendingSubmission.current = {
           conversationId: id,
           text,
-          key: crypto.randomUUID(),
+          key: createRequestId(),
         };
       await post(`/conversations/${id}/runs`, {
         message: text,

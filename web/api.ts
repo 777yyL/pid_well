@@ -9,7 +9,7 @@ export async function api<T>(
   const response = await fetch(`/api${path}`, {
     ...options,
     headers,
-    credentials: "same-origin",
+    credentials: options.credentials ?? "same-origin",
     signal: options.signal
       ? AbortSignal.any([
           options.signal,
