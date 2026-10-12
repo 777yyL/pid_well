@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Database } from "./db.js";
+import { productScope } from "./product-scope.js";
 
 export interface Checkpoint {
   summary: string;
@@ -160,6 +161,7 @@ export async function durableFacts(
   return {
     project,
     plan: conversation?.plan,
+    productScope: await productScope(db, projectId),
     documents,
     requirements,
     assessments,

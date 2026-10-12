@@ -313,6 +313,7 @@ function WorkspaceShell({
               workspace={state.workspace}
               events={state.events}
               onRefresh={state.refresh}
+              onSend={state.send}
               uploadRef={upload}
             />
           </div>

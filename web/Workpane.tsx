@@ -35,6 +35,7 @@ import type {
 import type { WorkspaceData } from "./useWorkspace";
 import { api, post } from "./api";
 import { Markdown } from "./Chat";
+import { ProductSelection } from "./ProductSelection";
 const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
@@ -45,11 +46,13 @@ export function Workpane({
   events,
   onRefresh,
   uploadRef,
+  onSend,
 }: {
   workspace: WorkspaceData;
   events: RunEvent[];
   onRefresh: () => Promise<void>;
   uploadRef: React.RefObject<(() => void) | null>;
+  onSend: (text: string) => Promise<void>;
 }) {
   const { message } = AntApp.useApp();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -597,6 +600,25 @@ export function Workpane({
               </>
             ),
             children: reqs,
+          },
+          {
+            key: "products",
+            label: "产品选型",
+            children: (
+              <ProductSelection
+                projectId={workspace.project.id}
+                scope={workspace.productScope}
+                locked={
+                  results.length > 0 ||
+                  workspace.productScope.status === "legacy"
+                }
+                active={workspace.runs.some(
+                  (r) => r.status === "queued" || r.status === "running",
+                )}
+                onRefresh={onRefresh}
+                onSend={onSend}
+              />
+            ),
           },
           { key: "results", label: "匹配结果", children: assessments },
           {

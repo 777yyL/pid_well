@@ -7,6 +7,7 @@ import { assessmentRows } from "./assessment.js";
 import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import { collectSales, salesHeaders } from "./sale-entity.js";
+import { productScope } from "./product-scope.js";
 export const safeCell = (value: unknown) => {
   const text = String(value ?? "");
   return /^[\s]*[=+\-@]/.test(text) ? `'${text}` : text;
@@ -67,7 +68,13 @@ export async function createReport(
       "SELECT id,name,hash FROM documents WHERE project_id=$1",
       [projectId],
     );
-    return { project, rows, pages, docs };
+    return {
+      project,
+      rows,
+      pages,
+      docs,
+      scope: await productScope(tx, projectId),
+    };
   });
   const { project, rows, pages, docs } = snapshot;
   const sales = collectSales(rows, pages);
@@ -151,6 +158,7 @@ export async function createReport(
     wikiProjectId: project.wiki_project_id,
     generatedAt: new Date().toISOString(),
     kind,
+    productScope: snapshot.scope,
     sales: sales.map(({ entity, page, requirements }) => ({
       title: entity.title,
       product: entity.product,
@@ -305,6 +313,16 @@ export async function createReport(
     provenance.addRow(["报告 ID", id]);
     provenance.addRow(["知识库项目", project.wiki_project_id]);
     provenance.addRow(["生成时间", manifest.generatedAt]);
+    provenance.addRow([
+      "产品选型版本",
+      snapshot.scope.revision,
+      snapshot.scope.status,
+    ]);
+    provenance.addRow([
+      "所选产品",
+      snapshot.scope.selected.map((p) => `${p.name} ${p.version}`).join("、"),
+    ]);
+    provenance.addRow(["售前策略", snapshot.scope.strategy]);
     provenance.addRow(["条款", "结果版本", "结论来源"]);
     manifest.requirements.forEach((r) =>
       provenance.addRow([r.id, r.revision, r.source]),

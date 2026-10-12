@@ -15,6 +15,7 @@ import {
   tokenHash,
 } from "./auth.js";
 import { config } from "./config.js";
+import { productScope, selectProducts } from "./product-scope.js";
 import { AppError } from "./errors.js";
 import { settingsView, saveSettings, loadSettings } from "./settings.js";
 import { WikiClient } from "./wiki.js";
@@ -229,6 +230,10 @@ export function routes(
       [id, input.name, input.description, input.wikiProjectId, user.id],
     );
     await audit(db, id, user.id, null, "project_created", input);
+    await db.query(
+      "INSERT INTO product_scopes(project_id) VALUES($1) ON CONFLICT DO NOTHING",
+      [id],
+    );
     return { id };
   });
   app.get("/api/projects/:id", async (request) => {
@@ -286,7 +291,14 @@ export function routes(
       runs,
       artifacts,
       findings,
+      productScope: await productScope(db, id),
     };
+  });
+  app.put("/api/projects/:id/product-scope", async (request) => {
+    const user = requireUser(request),
+      id = param(request, "id");
+    await accessProject(db, user, id);
+    return selectProducts(db, id, user.id, request.body);
   });
   app.post("/api/projects/:id/members", async (request) => {
     const user = requireUser(request);
@@ -369,6 +381,9 @@ export function routes(
       throw new AppError(422, "请管理员先在连接设置中配置模型");
     const runId = randomUUID();
     await db.transaction(async (tx) => {
+      await tx.query("SELECT id FROM projects WHERE id=$1 FOR UPDATE", [
+        conversation.project_id,
+      ]);
       await tx.query(
         "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status) VALUES($1,$2,$3,$4,$5,$6,$7)",
         [

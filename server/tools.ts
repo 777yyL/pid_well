@@ -8,6 +8,7 @@ import {
   requirementSchema,
   assessmentSchema,
   criteriaSchema,
+  productCandidateSchema,
 } from "../shared/domain.js";
 import {
   saveRequirements,
@@ -18,6 +19,7 @@ import { WikiClient, snapshotPage } from "./wiki.js";
 import { numberedLines } from "./documents.js";
 import { createReport } from "./reports.js";
 import { AppError } from "./errors.js";
+import { productScope, recommendProducts } from "./product-scope.js";
 import { loadSettings } from "./settings.js";
 export interface ToolContext {
   db: Database;
@@ -86,6 +88,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         );
         return {
           project,
+          productScope: await productScope(db, projectId),
           documents,
           requirements,
           assessments: await assessmentRows(
@@ -101,6 +104,24 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           offset: args.offset,
           nextOffset: args.offset + args.count,
         };
+      },
+    ),
+    tool(
+      "recommend_products",
+      "推荐候选产品",
+      "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
+      z.object({ candidates: productCandidateSchema.array().min(1).max(20) }),
+      async (args) => {
+        const result = await recommendProducts(
+          db,
+          projectId,
+          args.candidates,
+          runId,
+        );
+        await ctx.emit("products_recommended", {
+          count: result.recommendations.length,
+        });
+        return result;
       },
     ),
     tool(

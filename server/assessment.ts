@@ -10,6 +10,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parseSaleEntity } from "./sale-entity.js";
+import { enforceProductScope } from "./product-scope.js";
 export function checkOriginal(requirement: RequirementInput, lines: string[]) {
   if (
     requirement.lineEnd < requirement.lineStart ||
@@ -141,6 +142,8 @@ export async function saveAssessments(
       throw new AppError(422, "必须先读取知识库总览和产品页再保存匹配");
     for (const item of items) {
       checkVerdict(item);
+      const scopeRevision = await enforceProductScope(tx, projectId, item);
+      if (scopeRevision) item.productScopeRevision = scopeRevision;
       const [requirement] = await tx.query<{ confirmed: boolean }>(
         "SELECT confirmed FROM requirements WHERE project_id=$1 AND id=$2",
         [projectId, item.requirementId],

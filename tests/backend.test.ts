@@ -20,6 +20,11 @@ import { parseDocument } from "../server/documents.js";
 import { config } from "../server/config.js";
 import { AgentRunner, repairTranscript } from "../server/agent.js";
 import { createTools } from "../server/tools.js";
+import {
+  recommendProducts,
+  productScope,
+  enforceProductScope,
+} from "../server/product-scope.js";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssessmentInput } from "../shared/domain.js";
 
@@ -116,6 +121,112 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     salePage,
   );
   const evidenceLine = salePage.split("\n").indexOf(raw) + 1;
+  await t.test(
+    "产品选择：总览证据、多选与自定义、未确认门禁、版本冲突",
+    async () => {
+      const [admin] = await db.query<{ id: string }>(
+        "SELECT id FROM users WHERE username=$1",
+        ["test_admin"],
+      );
+      const scope = await productScope(db, projectId);
+      assert.equal(scope.status, "pending");
+      await assert.rejects(
+        enforceProductScope(db, projectId, {
+          product: "测试产品",
+          version: "v1",
+        } as AssessmentInput),
+        /确认推荐产品/,
+      );
+      const fakeRun = randomUUID();
+      await db.query(
+        "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status) VALUES($1,$2,$3,$4,'推荐产品',$5,'completed')",
+        [fakeRun, conversationId, projectId, admin.id, randomUUID()],
+      );
+      await assert.rejects(
+        recommendProducts(
+          db,
+          projectId,
+          [
+            {
+              name: "测试产品",
+              version: "v1",
+              path: "wiki/entities/products/test.md",
+              reason: "符合清单视频管理方向，可进一步检查规格",
+              coverage: "视频管理",
+              gaps: "需要逐条核验",
+              evidence: [
+                { snapshotId: sale.id, lineStart: 1, lineEnd: 1, quote: "---" },
+              ],
+            },
+          ],
+          fakeRun,
+        ),
+        /总览/,
+      );
+      const recommendations = await recommendProducts(
+        db,
+        projectId,
+        [
+          {
+            name: "测试产品",
+            version: "v1",
+            path: "wiki/entities/products/test.md",
+            reason: "符合清单视频管理方向，可进一步检查规格",
+            coverage: "视频管理",
+            gaps: "需要逐条核验",
+            evidence: [
+              {
+                snapshotId: overview.id,
+                lineStart: 1,
+                lineEnd: 1,
+                quote: "产品总览",
+              },
+            ],
+          },
+        ],
+        fakeRun,
+      );
+      assert.equal(recommendations.status, "pending");
+      const choose = {
+        expectedRevision: recommendations.revision,
+        selected: [
+          {
+            name: "测试产品",
+            version: "v1",
+            path: "wiki/entities/products/test.md",
+          },
+          { name: "自定义备用产品", version: "v2", path: "" },
+        ],
+        strategy: "优先已有平台",
+      };
+      const confirmed = await request(
+        "PUT",
+        `/api/projects/${projectId}/product-scope`,
+        choose,
+      );
+      assert.equal(confirmed.statusCode, 200, confirmed.body);
+      assert.equal(confirmed.json().selected.length, 2);
+      assert.equal(
+        (
+          await request(
+            "PUT",
+            `/api/projects/${projectId}/product-scope`,
+            choose,
+          )
+        ).statusCode,
+        409,
+      );
+      await assert.rejects(
+        recommendProducts(
+          db,
+          projectId,
+          recommendations.recommendations,
+          fakeRun,
+        ),
+        /不能覆盖/,
+      );
+    },
+  );
   const item: AssessmentInput = {
     requirementId: "T-1",
     sales: ["视频监控"],
@@ -269,6 +380,45 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       /正式实体页/,
     );
     await saveAssessments(db, projectId, [item], {});
+    await assert.rejects(
+      () =>
+        saveAssessments(
+          db,
+          projectId,
+          [{ ...item, product: "不在选择范围的产品" }],
+          {},
+        ),
+      /确认范围/,
+    );
+    await assert.rejects(
+      () => enforceProductScope(db, projectId, { ...item, version: "v99" }),
+      /确认范围/,
+    );
+    const foreign = await snapshotPage(
+      db,
+      projectId,
+      "wiki/entities/sale-items/foreign.md",
+      salePage.replace("product: 测试产品", "product: 未选择的第三方产品"),
+    );
+    await assert.rejects(
+      () =>
+        enforceProductScope(db, projectId, {
+          ...item,
+          evidence: [{ ...item.evidence[0], snapshotId: foreign.id }],
+        }),
+      /所属产品/,
+    );
+    const selected = await productScope(db, projectId);
+    assert.equal(
+      (
+        await request("PUT", `/api/projects/${projectId}/product-scope`, {
+          expectedRevision: selected.revision,
+          selected: [{ name: "其它产品", version: "", path: "" }],
+          strategy: "",
+        })
+      ).statusCode,
+      409,
+    );
     await assert.rejects(() => createReport(db, projectId, "xlsx"), /已复核/);
     const rows = await assessmentRows(db, projectId);
     assert.equal(rows[0].reviewed, false);
@@ -356,7 +506,10 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         standaloneBook.worksheets[0].getRow(2).getCell(8).value,
         100,
       );
-      assert.equal(standaloneBook.worksheets[0].getRow(2).getCell(7).value, null);
+      assert.equal(
+        standaloneBook.worksheets[0].getRow(2).getCell(7).value,
+        null,
+      );
       assert.equal(standaloneBook.worksheets[0].columnCount, 10);
       assert.equal(safeCell('=HYPERLINK("evil")'), '\'=HYPERLINK("evil")');
       const html = await createReport(db, projectId, "html");

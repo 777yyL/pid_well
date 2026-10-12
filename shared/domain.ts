@@ -23,6 +23,7 @@ export const evidenceSchema = z.object({
   quote: z.string().min(1),
 });
 export const assessmentSchema = z.object({
+  productScopeRevision: z.number().int().positive().optional(),
   requirementId: z.string(),
   sales: z.array(z.string().min(1)),
   product: z.string().min(1),
@@ -38,6 +39,34 @@ export const assessmentSchema = z.object({
   mustSelect: z.array(z.string()),
 });
 export type RequirementInput = z.infer<typeof requirementSchema>;
+export const productChoiceSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  version: z.string().trim().max(100).default(""),
+  path: z
+    .string()
+    .trim()
+    .max(500)
+    .default("")
+    .refine(
+      (p) =>
+        !p || (p.startsWith("wiki/") && !p.includes("..") && !p.includes("\\")),
+      "产品路径须位于 wiki/ 下",
+    ),
+});
+export const productCandidateSchema = productChoiceSchema.extend({
+  reason: z.string().min(10).max(4000),
+  coverage: z.string().min(1).max(2000),
+  gaps: z.string().max(2000).default(""),
+  evidence: z.array(evidenceSchema).min(1).max(5),
+});
+export interface ProductScope {
+  revision: number;
+  status: "pending" | "confirmed" | "legacy";
+  recommendations: z.infer<typeof productCandidateSchema>[];
+  selected: z.infer<typeof productChoiceSchema>[];
+  strategy: string;
+  confirmed_by: string | null;
+}
 export type AssessmentInput = z.infer<typeof assessmentSchema>;
 export interface User {
   id: string;
@@ -117,6 +146,7 @@ export interface RunEvent {
   created_at: string;
 }
 export interface Workspace {
+  productScope: ProductScope;
   project: Project;
   conversations: Conversation[];
   documents: Document[];

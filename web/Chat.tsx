@@ -27,6 +27,7 @@ const names: Record<string, string> = {
   wiki_graph: "查看产品关联",
   save_assessments: "保存匹配结果",
   get_assessments: "读取指定评估与版本",
+  recommend_products: "推荐候选产品",
   review_assessments: "逐条复核",
   record_finding: "记录阶段分析",
   export_report: "生成正式报告",

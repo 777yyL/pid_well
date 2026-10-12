@@ -100,6 +100,8 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS audit_log (id bigserial PRIMARY KEY, project_id uuid REFERENCES projects(id), user_id uuid REFERENCES users(id), run_id uuid REFERENCES runs(id), action text NOT NULL, data jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS artifacts (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), name text NOT NULL, storage_name text NOT NULL, format text NOT NULL, manifest jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `ALTER TABLE conversations ADD COLUMN IF NOT EXISTS checkpoint jsonb NOT NULL DEFAULT '{"summary":"","readRanges":{},"compressions":0}'`,
+  `CREATE TABLE IF NOT EXISTS product_scopes (project_id uuid PRIMARY KEY REFERENCES projects(id),revision integer NOT NULL DEFAULT 1,status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','confirmed','legacy')),recommendations jsonb NOT NULL DEFAULT '[]',selected jsonb NOT NULL DEFAULT '[]',strategy text NOT NULL DEFAULT '',confirmed_by uuid REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now())`,
+  `INSERT INTO product_scopes(project_id,status) SELECT p.id,CASE WHEN EXISTS(SELECT 1 FROM assessments a WHERE a.project_id=p.id) THEN 'legacy' ELSE 'pending' END FROM projects p ON CONFLICT DO NOTHING`,
 ];
 export async function migrate(db: Database) {
   await db.transaction(async (tx) => {
@@ -109,6 +111,9 @@ export async function migrate(db: Database) {
     );
     await tx.query(
       "INSERT INTO schema_migrations(version) VALUES(2) ON CONFLICT DO NOTHING",
+    );
+    await tx.query(
+      "INSERT INTO schema_migrations(version) VALUES(3) ON CONFLICT DO NOTHING",
     );
   });
 }
