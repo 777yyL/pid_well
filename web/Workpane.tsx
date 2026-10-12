@@ -425,6 +425,7 @@ export function Workpane({
         size="small"
         pagination={{ pageSize: 10, size: "small" }}
         dataSource={filtered}
+        rowClassName={(r: Assessment) => `assessment-row ${r.level}`}
         columns={[
           { title: "编号", dataIndex: "requirementId", width: 65 },
           {
@@ -444,10 +445,15 @@ export function Workpane({
             width: 100,
             render: (_, r: Assessment) => (
               <div>
-                <Tag bordered={false} color={levels[r.level].color}>
+                <Tag
+                  className={`assessment-level ${r.level}`}
+                  color={levels[r.level].color}
+                >
                   {levels[r.level].label}
                 </Tag>
-                <small className="muted">
+                <small
+                  className={`review-state ${r.source === "human" ? "human" : r.reviewed ? "reviewed" : "pending"}`}
+                >
                   {r.source === "human"
                     ? "人工确认"
                     : r.reviewed
@@ -744,7 +750,7 @@ export function Workpane({
             <h3>结论说明</h3>
             <p>{detail.note}</p>
             {(["ok", "hard", "no"] as const).map((key) => (
-              <section key={key}>
+              <section className={`assessment-finding ${key}`} key={key}>
                 <h4>
                   {{ ok: "已具备", hard: "需配置 / 定制", no: "明确缺口" }[key]}
                 </h4>

@@ -25,8 +25,18 @@ export async function createApp(db: Database, serveWeb = false) {
   });
   await app.register(cookie);
   await app.register(multipart);
-  await app.register(rateLimit, { max: 300, timeWindow: "1 minute" });
   attachAuth(app, db);
+  await app.register(rateLimit, {
+    max: 300,
+    timeWindow: "1 minute",
+    hook: "preHandler",
+    keyGenerator: (request) =>
+      request.user ? `user:${request.user.id}` : `ip:${request.ip}`,
+    errorResponseBuilder: () => ({
+      statusCode: 429,
+      message: "请求过于频繁，请稍后重试；已有任务仍会在服务端继续执行",
+    }),
+  });
   const runner = new AgentRunner(db);
   routes(app, db, runner);
   app.setErrorHandler((error, request, reply) => {
@@ -74,7 +84,18 @@ export async function createApp(db: Database, serveWeb = false) {
     } else {
       const { createServer } = await import("vite");
       const vite = await createServer({
-        server: { middlewareMode: true, hmr: { port: config.PORT + 1 } },
+        server: {
+          middlewareMode: true,
+          hmr: { port: config.PORT + 1 },
+          watch: {
+            ignored: [
+              "**/data/**",
+              "**/backups/**",
+              "**/coverage/**",
+              `${config.dataDir.replaceAll("\\", "/")}/**`,
+            ],
+          },
+        },
         appType: "custom",
       });
       app.addHook("onRequest", async (request, reply) => {

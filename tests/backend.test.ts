@@ -8,6 +8,7 @@ import Fastify from "fastify";
 import ExcelJS from "exceljs";
 import { openDatabase, migrate } from "../server/db.js";
 import { createApp } from "../server/index.js";
+import { issueSession } from "../server/auth.js";
 import {
   saveRequirements,
   saveAssessments,
@@ -590,7 +591,14 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       reply.raw.end("data: [DONE]\n\n");
       return;
     }
-    if (userText.includes("慢任务")) {
+    if (
+      userText.includes("慢任务") ||
+      body.messages.some(
+        (m) =>
+          m.role === "user" &&
+          JSON.stringify(m.content).includes("超时保护测试"),
+      )
+    ) {
       send({ role: "assistant", content: "" });
       const timer = setTimeout(() => {
         send({ content: "迟到的回复" }, "stop");
@@ -600,6 +608,34 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       return;
     }
     send({ role: "assistant", content: "" });
+    if (
+      userText.includes("兼容恢复测试") ||
+      body.messages.some(
+        (m) =>
+          m.role === "user" &&
+          JSON.stringify(m.content).includes("持续协议错误测试"),
+      )
+    ) {
+      send(
+        {
+          content:
+            '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="save_requirements">未执行的调用文本</｜｜DSML｜｜ invoke>',
+        },
+        "stop",
+      );
+      reply.raw.end("data: [DONE]\n\n");
+      return;
+    }
+    if (
+      body.messages.some(
+        (m) =>
+          m.role === "user" && JSON.stringify(m.content).includes("空回复测试"),
+      )
+    ) {
+      send({ content: "" }, "stop");
+      reply.raw.end("data: [DONE]\n\n");
+      return;
+    }
     if (userText.includes("循环无进展")) {
       send(
         {
@@ -801,6 +837,63 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       assert.equal((await waitRun(slow.json().id)).status, "cancelled");
     },
   );
+  await t.test(
+    "错误工具文本自动恢复；持续协议错误、空回复和模型超时可恢复中断",
+    async () => {
+      for (const [message, status, retryCount] of [
+        ["兼容恢复测试", "completed", 1],
+        ["持续协议错误测试", "interrupted", 2],
+        ["空回复测试", "interrupted", 2],
+        ["超时保护测试", "interrupted", 2],
+      ] as const) {
+        const created = await request(
+          "POST",
+          `/api/projects/${projectId}/conversations`,
+        );
+        const id = created.json().id;
+        const response = await request(
+          "POST",
+          `/api/conversations/${id}/runs`,
+          { message, idempotencyKey: randomUUID() },
+        );
+        const runId = response.json().id;
+        const result = await waitRun(runId);
+        assert.equal(result.status, status, `${message}: ${result.error}`);
+        const events = await db.query<{
+          type: string;
+          payload: Record<string, unknown>;
+        }>("SELECT type,payload FROM run_events WHERE run_id=$1 ORDER BY id", [
+          runId,
+        ]);
+        assert.equal(
+          events.filter((e) => e.type === "run_retry").length,
+          retryCount,
+        );
+        assert(
+          !events.some(
+            (e) =>
+              e.type === "tool_execution_start" &&
+              e.payload.toolName === "save_requirements",
+          ),
+        );
+        const history = await request(
+          "GET",
+          `/api/conversations/${id}/messages`,
+        );
+        assert(
+          !history.body.includes("DSML"),
+          "错误工具文本不可作为普通回复保存",
+        );
+        const progress = events.filter((e) => e.type === "run_progress");
+        assert(progress.length > 0);
+        assert.equal(typeof progress[0].payload.requirements, "number");
+        if (message === "超时保护测试") {
+          assert.match(result.error, /超时/);
+          assert(progress.length >= 3, "等待模型期间仍应定时发送状态");
+        }
+      }
+    },
+  );
   await t.test("自动续跑保留无进展保护和任务总预算", async () => {
     for (const [message, reason] of [
       ["循环无进展", "未取得进展"],
@@ -934,6 +1027,41 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       const repaired = repairTranscript([assistant]);
       assert.equal(repaired[1].role, "toolResult");
       assert(repaired[1].role === "toolResult" && repaired[1].isError);
+    },
+  );
+  await t.test(
+    "同一公司代理下不同登录用户独立限流，超额用户仍受限制",
+    async () => {
+      const { app: rateApp } = await createApp(db);
+      await rateApp.ready();
+      const users = await db.query<{ id: string }>(
+        "SELECT id FROM users WHERE username IN ('test_admin','test_member') ORDER BY username",
+      );
+      const sessions = await Promise.all(
+        users.map((user) => issueSession(db, user.id)),
+      );
+      try {
+        for (let index = 0; index < 300; index++) {
+          const response = await rateApp.inject({
+            url: "/api/health",
+            headers: { cookie: `workspace_session=${sessions[0].token}` },
+          });
+          assert.equal(response.statusCode, 200);
+        }
+        const blocked = await rateApp.inject({
+          url: "/api/health",
+          headers: { cookie: `workspace_session=${sessions[0].token}` },
+        });
+        assert.equal(blocked.statusCode, 429);
+        assert.match(blocked.json().error, /服务端继续/);
+        const other = await rateApp.inject({
+          url: "/api/health",
+          headers: { cookie: `workspace_session=${sessions[1].token}` },
+        });
+        assert.equal(other.statusCode, 200, "同 IP 另一用户不应被连带限流");
+      } finally {
+        await rateApp.close();
+      }
     },
   );
   await t.test("修改密码撤销旧登录会话", async () => {

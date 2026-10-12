@@ -1,6 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { malformedToolText } from "../shared/agent-protocol.js";
 import ExcelJS from "exceljs";
+test("工具协议文本不执行，正常讨论协议名称不误判", () => {
+  assert(
+    malformedToolText(
+      '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="save_requirements">',
+    ),
+  );
+  assert(
+    malformedToolText('<tool_call>{"name":"save_requirements"}</tool_call>'),
+  );
+  assert(!malformedToolText("DSML 兼容性需要检查，请使用标准工具调用。"));
+  assert(!malformedToolText("请确认 205 条已保存需求后继续。"));
+});
 import {
   parseSaleEntity,
   collectSales,

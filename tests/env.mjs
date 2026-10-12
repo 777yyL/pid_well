@@ -6,6 +6,9 @@ process.env.DATA_DIR = directory;
 process.env.MAX_AGENT_TURNS = "2";
 process.env.MAX_TOTAL_AGENT_TURNS = "8";
 process.env.MAX_NO_PROGRESS_TURNS = "3";
+process.env.MODEL_REQUEST_TIMEOUT_MS = "1000";
+process.env.MODEL_IDLE_TIMEOUT_MS = "1000";
+process.env.RUN_HEARTBEAT_MS = "200";
 process.on("exit", () => {
   const target = resolve(directory);
   if (

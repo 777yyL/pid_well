@@ -14,6 +14,7 @@ import { loadSettings } from "./settings.js";
 import { createTools } from "./tools.js";
 import type { Run } from "../shared/domain.js";
 import { AppError } from "./errors.js";
+import { malformedToolText } from "../shared/agent-protocol.js";
 import {
   emptyCheckpoint,
   recentContext,
@@ -85,6 +86,8 @@ export const publicModelError = (message: string) => {
   if (/abort|cancel/i.test(message)) return "任务已停止";
   return "模型执行失败，请检查模型名称、连接地址和工具调用兼容性";
 };
+// A provider may emit its internal tool syntax as text instead of tool_calls.
+// Never interpret or execute this text as a tool invocation.
 export async function systemPrompt() {
   const rules = await readFile(resolve("agent/product-matcher.md"), "utf8");
   const matchingRules =
@@ -173,6 +176,7 @@ export function repairTranscript(messages: AgentMessage[]): AgentMessage[] {
 }
 export class AgentRunner {
   private active = new Map<string, Agent>();
+  private controls = new Map<string, AbortController>();
   private projectLocks = new Set<string>();
   private tasks = new Set<Promise<void>>();
   private timer?: ReturnType<typeof setInterval>;
@@ -237,6 +241,7 @@ export class AgentRunner {
       run.conversation_id,
     ]);
     const { models, model } = compatibleModel(settings);
+    const control = new AbortController();
     const emit = (type: string, payload: Record<string, unknown>) =>
       this.emit(run.id, type, payload);
     const tools = createTools({
@@ -254,6 +259,19 @@ export class AgentRunner {
     let noProgress = 0;
     let stalled = false;
     let forceCompact = false;
+    let protocolError = false;
+    let requestExpired = false;
+    let requestTimer: ReturnType<typeof setTimeout> | undefined;
+    let idleTimer: ReturnType<typeof setInterval> | undefined;
+    let phase = "准备执行";
+    let phaseSince = Date.now();
+    let lastActivity = Date.now();
+    let retries = 0;
+    const setPhase = (value: string) => {
+      phase = value;
+      phaseSince = Date.now();
+      lastActivity = Date.now();
+    };
     const fingerprints = new Set<string>();
     const checkpoint = conversation.checkpoint ?? emptyCheckpoint();
     updateReadRanges(checkpoint, conversation.context);
@@ -264,11 +282,35 @@ export class AgentRunner {
         tools,
         messages: repairTranscript(conversation.context),
       },
-      streamFn: (m, c, o) =>
-        models.streamSimple(m, c, {
+      streamFn: (m, c, o) => {
+        setPhase("等待模型响应");
+        requestExpired = false;
+        clearTimeout(requestTimer);
+        clearInterval(idleTimer);
+        const controller = new AbortController();
+        idleTimer = setInterval(
+          () => {
+            if (Date.now() - lastActivity >= config.MODEL_IDLE_TIMEOUT_MS) {
+              requestExpired = true;
+              controller.abort(new Error("Model idle timeout"));
+            }
+          },
+          Math.min(1000, config.MODEL_IDLE_TIMEOUT_MS / 2),
+        );
+        requestTimer = setTimeout(() => {
+          requestExpired = true;
+          controller.abort(new Error("Model request timeout"));
+        }, config.MODEL_REQUEST_TIMEOUT_MS);
+        return models.streamSimple(m, c, {
           ...o,
+          signal: AbortSignal.any([
+            control.signal,
+            controller.signal,
+            ...(o?.signal ? [o.signal] : []),
+          ]),
           maxTokens: settings.maxOutputTokens,
-        }),
+        });
+      },
       toolExecution: "sequential",
       sessionId: run.conversation_id,
       prepareRequest: async ({ context }, signal) => {
@@ -293,6 +335,7 @@ export class AgentRunner {
         const reason = forceCompact ? "执行检查点" : "上下文接近预算";
         forceCompact = false;
         await emit("context_compaction", { stage: "started", reason });
+        setPhase("压缩上下文并保存检查点");
         const facts = await durableFacts(
           this.db,
           run.project_id,
@@ -382,6 +425,14 @@ export class AgentRunner {
       },
       finishTurn: async (turn) => {
         turns++;
+        const text = turn.message.content
+          .filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join("");
+        protocolError =
+          turn.message.stopReason === "stop" &&
+          !turn.message.content.some((p) => p.type === "toolCall") &&
+          (!text.trim() || malformedToolText(text));
         if (turn.message.stopReason === "length") truncated = true;
         updateReadRanges(checkpoint, turn.context.messages);
         if (turn.toolResults.length) {
@@ -451,7 +502,9 @@ export class AgentRunner {
       },
     });
     this.active.set(run.id, agent);
+    this.controls.set(run.id, control);
     let delta = "";
+    let responseText = "";
     let lastFlush = Date.now();
     const flush = async () => {
       if (delta) {
@@ -462,26 +515,41 @@ export class AgentRunner {
       }
     };
     agent.subscribe(async (event) => {
+      if (event.type === "message_update") lastActivity = Date.now();
       if (
         event.type === "message_update" &&
         event.assistantMessageEvent.type === "text_delta"
       ) {
-        delta += event.assistantMessageEvent.delta;
-        if (Date.now() - lastFlush > 150 || delta.length > 300) await flush();
+        responseText += event.assistantMessageEvent.delta;
+        if (!malformedToolText(responseText)) {
+          delta += event.assistantMessageEvent.delta;
+          if (Date.now() - lastFlush > 150 || delta.length > 300) await flush();
+        } else delta = "";
+        phase = "模型正在生成回复或下一步动作";
       }
-      if (event.type === "message_start" && event.message.role === "assistant")
+      if (
+        event.type === "message_start" &&
+        event.message.role === "assistant"
+      ) {
+        responseText = "";
         await emit("assistant_start", {});
+      }
       if (event.type === "message_end") {
+        if (event.message.role === "assistant") {
+          clearTimeout(requestTimer);
+          clearInterval(idleTimer);
+        }
         await flush();
         await this.db.query(
           "UPDATE conversations SET context=$1,updated_at=now() WHERE id=$2",
           [JSON.stringify(agent.state.messages), run.conversation_id],
         );
         if (event.message.role === "assistant") {
-          const content = event.message.content
+          const rawContent = event.message.content
             .filter((part) => part.type === "text")
             .map((part) => part.text)
             .join("");
+          const content = malformedToolText(rawContent) ? "" : rawContent;
           if (content)
             await this.db.query(
               "INSERT INTO messages(id,conversation_id,run_id,role,content) VALUES($1,$2,$3,$4,$5)",
@@ -490,22 +558,95 @@ export class AgentRunner {
           await emit("assistant_end", { text: content });
         }
       }
-      if (event.type === "tool_execution_start")
+      if (event.type === "tool_execution_start") {
+        setPhase(`执行工具：${event.toolName}`);
         await emit(event.type, {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           args: event.args,
         });
-      if (event.type === "tool_execution_end")
+      }
+      if (event.type === "tool_execution_end") {
+        setPhase(
+          event.isError
+            ? "工具返回问题，正在调整执行策略"
+            : "工具执行完成，准备下一步",
+        );
         await emit(event.type, {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           isError: event.isError,
           result: event.result,
         });
+        await progress();
+      }
     });
+    let heartbeatBusy = false;
+    const progress = async () => {
+      if (heartbeatBusy) return;
+      heartbeatBusy = true;
+      try {
+        updateReadRanges(checkpoint, agent.state.messages);
+        const documents = await this.db.query<{ id: string; total: number }>(
+          "SELECT id,jsonb_array_length(lines)::int AS total FROM documents WHERE project_id=$1 AND status='ready'",
+          [run.project_id],
+        );
+        const readLines = documents.reduce(
+          (total, document) =>
+            total +
+            (checkpoint.readRanges[document.id] ?? []).reduce(
+              (sum, [start, end]) =>
+                sum +
+                Math.max(
+                  0,
+                  Math.min(end, document.total) - Math.max(start, 1) + 1,
+                ),
+              0,
+            ),
+          0,
+        );
+        const [requirements] = await this.db.query<{
+          total: number;
+          confirmed: number;
+        }>(
+          "SELECT count(*)::int AS total,count(*) FILTER(WHERE confirmed)::int AS confirmed FROM requirements WHERE project_id=$1",
+          [run.project_id],
+        );
+        const [assessments] = await this.db.query<{
+          total: number;
+          reviewed: number;
+        }>(
+          "SELECT count(*)::int AS total,count(*) FILTER(WHERE reviewed)::int AS reviewed FROM assessments WHERE project_id=$1",
+          [run.project_id],
+        );
+        await flush();
+        await emit("run_progress", {
+          phase,
+          phaseSince,
+          lastActivity,
+          turns,
+          retries,
+          readLines,
+          totalLines: documents.reduce(
+            (sum, document) => sum + document.total,
+            0,
+          ),
+          requirements: requirements.total,
+          confirmed: requirements.confirmed,
+          assessments: assessments.total,
+          reviewed: assessments.reviewed,
+        });
+      } finally {
+        heartbeatBusy = false;
+      }
+    };
+    const heartbeat = setInterval(
+      () => void progress().catch(() => {}),
+      config.RUN_HEARTBEAT_MS,
+    );
     const deadline = setTimeout(() => {
       timeout = true;
+      control.abort();
       agent.abort();
     }, config.RUN_TIMEOUT_MS);
     const task = (async () => {
@@ -516,7 +657,57 @@ export class AgentRunner {
           [run.id],
         );
         if (initial.status === "cancelled") return;
+        await progress();
         await agent.prompt(run.input);
+        while (
+          (protocolError ||
+            requestExpired ||
+            /429|rate.limit|5\d\d|connection.error|fetch.failed|ECONN|timeout|timed.out/i.test(
+              agent.state.errorMessage ?? "",
+            )) &&
+          retries < 2 &&
+          !control.signal.aborted &&
+          !timeout &&
+          !this.closing &&
+          !capped &&
+          !truncated &&
+          !stalled
+        ) {
+          const [live] = await this.db.query<{ status: string }>(
+            "SELECT status FROM runs WHERE id=$1",
+            [run.id],
+          );
+          if (live.status === "cancelled") break;
+          retries++;
+          await emit("run_retry", {
+            attempt: retries,
+            reason: protocolError
+              ? "模型未返回有效的工具调用或回复，正在重新请求"
+              : "模型请求超时或暂时不可用，正在从已保存状态恢复",
+          });
+          // Remove malformed/error output, retaining all successful tool results.
+          agent.state.messages = repairTranscript(
+            agent.state.messages.filter(
+              (message) =>
+                message.role !== "assistant" ||
+                !(
+                  message.stopReason === "error" ||
+                  message.stopReason === "aborted" ||
+                  malformedToolText(
+                    message.content
+                      .filter((p) => p.type === "text")
+                      .map((p) => p.text)
+                      .join(""),
+                  )
+                ),
+            ),
+          );
+          protocolError = false;
+          await agent.prompt(
+            "系统恢复提示：先 project_context 查询已经保存的事实，再继续用户原任务；不得重复创建条款或覆盖人工确认。必须通过标准 tool_calls 调用工具，使用工具 schema 中的字段及枚举，不要输出 DSML/XML 工具文本。如果需人工确认，请明确告知下一步并停止。",
+          );
+        }
+        await progress();
         const [current] = await this.db.query<{ status: string }>(
           "SELECT status FROM runs WHERE id=$1",
           [run.id],
@@ -529,40 +720,68 @@ export class AgentRunner {
               ? "interrupted"
               : timeout
                 ? "failed"
-                : capped || truncated || stalled
+                : capped ||
+                    truncated ||
+                    stalled ||
+                    protocolError ||
+                    requestExpired
                   ? "interrupted"
                   : error
                     ? "failed"
                     : "completed";
-        const reason = timeout
-          ? "执行超时，已有结果已保存，可恢复继续"
-          : truncated
-            ? "模型响应达到输出上限，已有结果已保存。点击恢复执行，按章节、小批次继续提取条款。"
-            : stalled
-              ? "连续多轮未取得进展，已暂停以避免重复调用。请检查工具错误或补充信息后恢复。"
-              : capped
-                ? "达到任务总执行预算，已有结果与检查点已保存，可恢复继续"
-                : error
-                  ? publicModelError(error)
-                  : null;
+        const reason =
+          current.status === "cancelled"
+            ? null
+            : this.closing
+              ? "服务停止，结果已保存，可恢复继续"
+              : timeout
+                ? "执行超时，已有结果已保存，可恢复继续"
+                : requestExpired
+                  ? `模型单次请求超时，自动恢复 ${retries} 次仍未成功。已有结果已保存，请检查模型服务或网络后恢复执行。`
+                  : protocolError
+                    ? `模型未返回有效回复或标准工具调用，自动修正 ${retries} 次仍未成功。已有结果已保存，请检查模型工具调用兼容性后恢复。`
+                    : truncated
+                      ? "模型响应达到输出上限，已有结果已保存。点击恢复执行，按章节、小批次继续提取条款。"
+                      : stalled
+                        ? "连续多轮未取得进展，已暂停以避免重复调用。请检查工具错误或补充信息后恢复。"
+                        : capped
+                          ? "达到任务总执行预算，已有结果与检查点已保存，可恢复继续"
+                          : error
+                            ? publicModelError(error)
+                            : null;
         await this.db.query(
           "UPDATE runs SET status=$1,error=$2,updated_at=now() WHERE id=$3",
           [status, reason, run.id],
         );
         await emit("run_finished", { status, error: reason });
       } catch (error) {
-        const status = this.closing ? "interrupted" : "failed";
-        const reason = this.closing
-          ? "服务停止，结果已保存，可恢复继续"
-          : error instanceof AppError
-            ? error.message
-            : "Agent 执行失败，已有结果已保存";
+        const [current] = await this.db.query<{ status: string }>(
+          "SELECT status FROM runs WHERE id=$1",
+          [run.id],
+        );
+        const status =
+          current.status === "cancelled"
+            ? "cancelled"
+            : this.closing
+              ? "interrupted"
+              : "failed";
+        const reason =
+          status === "cancelled"
+            ? null
+            : this.closing
+              ? "服务停止，结果已保存，可恢复继续"
+              : error instanceof AppError
+                ? error.message
+                : "Agent 执行失败，已有结果已保存";
         await this.db.query(
           "UPDATE runs SET status=$1,error=$2,updated_at=now() WHERE id=$3 AND status<>'cancelled'",
           [status, reason, run.id],
         );
         await emit("run_finished", { status, error: reason });
       } finally {
+        clearInterval(heartbeat);
+        clearTimeout(requestTimer);
+        clearInterval(idleTimer);
         clearTimeout(deadline);
         try {
           await this.db.query(
@@ -571,6 +790,7 @@ export class AgentRunner {
           );
         } finally {
           this.active.delete(run.id);
+          this.controls.delete(run.id);
           this.projectLocks.delete(run.project_id);
         }
       }
@@ -584,10 +804,12 @@ export class AgentRunner {
       [runId],
     );
     this.active.get(runId)?.abort();
+    this.controls.get(runId)?.abort();
   }
   async close() {
     this.closing = true;
     if (this.timer) clearInterval(this.timer);
+    for (const control of this.controls.values()) control.abort();
     for (const agent of this.active.values()) agent.abort();
     await Promise.allSettled([...this.tasks]);
   }

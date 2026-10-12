@@ -294,6 +294,7 @@ function WorkspaceShell({
         ) : state.workspace ? (
           <div className={`workspace-columns mobile-${mobilePane}`}>
             <Chat
+              connectionError={state.loadError}
               messages={state.messages}
               events={state.events}
               streaming={state.streaming}

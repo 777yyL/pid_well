@@ -12,6 +12,9 @@ const env = z
     COOKIE_SECURE: z.enum(["true", "false"]).default("false"),
     MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(8).default(2),
     RUN_TIMEOUT_MS: z.coerce.number().int().min(1000).default(900000),
+    MODEL_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).default(600000),
+    MODEL_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1000).default(120000),
+    RUN_HEARTBEAT_MS: z.coerce.number().int().min(200).default(5000),
     MAX_AGENT_TURNS: z.coerce.number().int().min(1).max(200).default(40),
     MAX_TOTAL_AGENT_TURNS: z.coerce
       .number()
@@ -26,7 +29,9 @@ export const config = {
   ...env,
   dataDir: resolve(env.DATA_DIR),
   secure: env.COOKIE_SECURE === "true",
-  production: process.env.NODE_ENV === "production",
+  production: process.env.NODE_ENV
+    ? process.env.NODE_ENV === "production"
+    : /[\\/]dist[\\/]server[\\/]index\.js$/.test(process.argv[1] ?? ""),
 };
 mkdirSync(config.dataDir, { recursive: true });
 const keyPath = resolve(config.dataDir, "encryption.key");

@@ -95,6 +95,8 @@ export function useWorkspace() {
   const runId = latestRun?.id;
   useEffect(() => {
     if (!runId) return;
+    setEvents([]);
+    setStreaming("");
     let live = true;
     let cursor = 0;
     let busy = false;
@@ -107,6 +109,7 @@ export function useWorkspace() {
           `/runs/${runId}/events?after=${cursor}`,
         );
         if (!live) return;
+        setLoadError("");
         const batch = data.events.map((e) => ({ ...e, id: Number(e.id) }));
         if (batch.length) {
           cursor = batch.at(-1)!.id;

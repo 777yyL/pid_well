@@ -6,11 +6,13 @@ import {
   StopOutlined,
   SyncOutlined,
   CheckOutlined,
+  WarningOutlined,
   FileSearchOutlined,
   MoreOutlined,
 } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { malformedToolText } from "../shared/agent-protocol";
 import type {
   ChatMessage,
   Conversation,
@@ -33,6 +35,12 @@ const names: Record<string, string> = {
   export_report: "生成正式报告",
 };
 export function Markdown({ text }: { text: string }) {
+  if (malformedToolText(text))
+    return (
+      <p className="protocol-warning">
+        模型返回了不兼容的工具调用文本。这段文字没有作为工具执行，请查看任务状态或恢复执行。
+      </p>
+    );
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -58,6 +66,7 @@ export function Chat({
   onCancel,
   onUpload,
   hasDocuments,
+  connectionError,
 }: {
   messages: ChatMessage[];
   events: RunEvent[];
@@ -70,8 +79,15 @@ export function Chat({
   onCancel: () => void;
   onUpload: () => void;
   hasDocuments: boolean;
+  connectionError?: string;
 }) {
   const [draft, setDraft] = useState("");
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!activeRun) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeRun?.id]);
   const end = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -96,6 +112,33 @@ export function Chat({
   const compaction = events
     .filter((e) => e.type === "context_compaction")
     .at(-1);
+  const sameConversation =
+    !activeRun || activeRun.conversation_id === conversation?.id;
+  const progress = sameConversation
+    ? events.filter((e) => e.type === "run_progress").at(-1)
+    : undefined;
+  const retry = sameConversation
+    ? events.filter((e) => e.type === "run_retry").at(-1)
+    : undefined;
+  const heartbeatAge = progress
+    ? Math.max(
+        0,
+        Math.floor((now - new Date(progress.created_at).getTime()) / 1000),
+      )
+    : 0;
+  const elapsed = activeRun
+    ? Math.max(
+        0,
+        Math.floor((now - new Date(activeRun.created_at).getTime()) / 1000),
+      )
+    : 0;
+  const currentTool = tools.findLast((t) => !t.finish);
+  const phase = currentTool
+    ? (names[String(currentTool.event.payload.toolName)] ?? "执行工具")
+    : String(progress?.payload.phase ?? "正在准备模型请求").replace(
+        /执行工具：(\w+)/,
+        (_, name: string) => names[name] ?? name,
+      );
   async function submit(text = draft) {
     if (!text.trim() || activeRun || sending) return;
     try {
@@ -121,7 +164,7 @@ export function Chat({
             : "Pi Agent"}
         </Tag>
       </header>
-      {compaction && (
+      {activeRun && sameConversation && compaction && (
         <div className="plan-heading" role="status">
           <span>
             {compaction.payload.stage === "started"
@@ -236,10 +279,15 @@ export function Chat({
         {activeTools.length > 0 && (
           <div className="tool-trail">
             {activeTools.map(({ event, finish }) => (
-              <details key={event.id}>
+              <details
+                key={event.id}
+                className={finish?.payload.isError ? "tool-error" : ""}
+              >
                 <summary>
                   <span>
-                    {finish ? (
+                    {finish?.payload.isError ? (
+                      <WarningOutlined />
+                    ) : finish ? (
                       <CheckOutlined />
                     ) : (
                       <SyncOutlined spin={!!activeRun} />
@@ -279,6 +327,78 @@ export function Chat({
             </div>
           </article>
         )}
+        {activeRun && !sameConversation && (
+          <div className="live-activity" role="status">
+            此项目的另一个会话正在执行。请在左侧切换到该会话查看实时进度；本项目同时只能执行一个任务。
+          </div>
+        )}
+        {activeRun && sameConversation && (
+          <div
+            className={`live-activity ${connectionError || heartbeatAge > 20 ? "connection-warning" : ""}`}
+            role="status"
+            aria-live="polite"
+          >
+            <div className="activity-title">
+              <SyncOutlined spin={!connectionError && heartbeatAge <= 20} />
+              <b>
+                {connectionError
+                  ? "连接暂时中断，正在重新连接"
+                  : heartbeatAge > 20
+                    ? "执行状态更新延迟，正在核实"
+                    : activeRun.status === "queued"
+                      ? "任务排队中"
+                      : phase}
+              </b>
+              <span>
+                {Math.floor(elapsed / 60)}分{elapsed % 60}秒
+              </span>
+            </div>
+            <p>
+              {connectionError || heartbeatAge > 20
+                ? "页面暂时无法确认服务端状态。已保存的结果会保留，连接恢复后自动同步，请避免重复发起任务。"
+                : activeRun.status === "queued"
+                  ? "等待可用的执行名额，排队结束后自动开始。"
+                  : "任务仍在执行；下方为已保存的真实进度。模型等待期间也会持续同步状态。"}
+            </p>
+            {progress && (
+              <div className="activity-counts">
+                <span>
+                  原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b> /{" "}
+                  {Number(progress.payload.totalLines ?? 0)} 行
+                </span>
+                <span>
+                  条款 <b>{Number(progress.payload.requirements)}</b> · 已确认{" "}
+                  <b>{Number(progress.payload.confirmed)}</b>
+                </span>
+                <span>
+                  评估 <b>{Number(progress.payload.assessments)}</b> · 已复核{" "}
+                  <b>{Number(progress.payload.reviewed)}</b>
+                </span>
+                <span>
+                  执行 <b>{Number(progress.payload.turns)}</b> 轮
+                </span>
+              </div>
+            )}
+            {progress && (
+              <small>
+                最近同步 {heartbeatAge} 秒前 · 当前动作耗时{" "}
+                {Math.max(
+                  0,
+                  Math.floor(
+                    (now - Number(progress.payload.phaseSince)) / 1000,
+                  ),
+                )}{" "}
+                秒
+              </small>
+            )}
+            {retry && (
+              <div className="activity-retry">
+                <WarningOutlined /> 自动恢复 {Number(retry.payload.attempt)} /
+                2：{String(retry.payload.reason)}
+              </div>
+            )}
+          </div>
+        )}
         {latestRun?.error && (
           <Alert
             className="run-error"
@@ -301,6 +421,14 @@ export function Chat({
               ) : undefined
             }
           />
+        )}
+        {!activeRun && latestRun?.status === "completed" && (
+          <div className="turn-finished" role="status">
+            <CheckOutlined /> 本轮执行已结束
+            {plan.some((step) => step.status !== "done")
+              ? "，项目计划尚未全部完成。请根据 Agent 的说明确认条款、产品选型或继续对话。"
+              : "。结果与执行记录已保存，可继续追问。"}
+          </div>
         )}
         <div ref={end} />
       </div>

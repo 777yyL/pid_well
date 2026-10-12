@@ -10,6 +10,22 @@ export async function api<T>(
     ...options,
     headers,
     credentials: "same-origin",
+    signal: options.signal
+      ? AbortSignal.any([
+          options.signal,
+          AbortSignal.timeout(
+            options.body instanceof FormData ? 180000 : 20000,
+          ),
+        ])
+      : AbortSignal.timeout(options.body instanceof FormData ? 180000 : 20000),
+  }).catch((error: unknown) => {
+    if (error instanceof DOMException && error.name === "TimeoutError")
+      throw new Error(
+        "服务响应超时，正在重新连接。任务可能仍在执行，请勿重复提交",
+      );
+    if (error instanceof TypeError)
+      throw new Error("无法连接服务，正在重新连接。请检查网络连接");
+    throw error;
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: "服务连接失败" }));
