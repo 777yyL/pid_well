@@ -105,7 +105,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     db,
     projectId,
     "wiki/entities/products/test.md",
-    "---\ntype: product\ntitle: 测试产品\n---\n产品导航",
+    "---\ntype: product\ntitle: 测试产品\n---\n产品导航\n[视频监控](../sale-items/video.md)",
   );
   const salePage =
     "---\ntype: sale-item\ntitle: 视频监控\nproduct: 测试产品\nversion: v1\nmodule_id: VMS\nunit: 套\nfixed_price: 100\n---\n## 销售项描述\n视频管理能力\n## 技术规格\n支持视频预览、录像回放和云台控制\n第二行：支持设备管理";

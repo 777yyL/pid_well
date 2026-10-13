@@ -149,7 +149,32 @@ export interface RunEvent {
   payload: Record<string, unknown>;
   created_at: string;
 }
+export interface ProductAlternative {
+  id: number;
+  data: {
+    requirementId: string;
+    product: ProductScope["selected"][number];
+    sales: string;
+    reason: string;
+    evidence: z.infer<typeof evidenceSchema>;
+    scopeRevision: number;
+  };
+}
 export interface Workspace {
+  alternatives: ProductAlternative[];
+  searchTrace: {
+    id: number;
+    action: string;
+    created_at: string;
+    data: {
+      requirementId: string;
+      query: string;
+      scopeRevision: number;
+      matchCount?: number;
+      reason?: string;
+      explanation?: string;
+    };
+  }[];
   productScope: ProductScope;
   project: Project;
   conversations: Conversation[];

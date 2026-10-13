@@ -324,6 +324,14 @@ export function routes(
       artifacts,
       findings,
       productScope: await productScope(db, id),
+      searchTrace: await db.query(
+        "SELECT id,action,data,created_at FROM audit_log WHERE project_id=$1 AND action IN ('product_scoped_search','product_global_search') ORDER BY id DESC LIMIT 200",
+        [id],
+      ),
+      alternatives: await db.query(
+        "SELECT id,data FROM audit_log WHERE project_id=$1 AND action='product_alternative' ORDER BY id DESC LIMIT 100",
+        [id],
+      ),
     };
   });
   app.put("/api/projects/:id/product-scope", async (request) => {

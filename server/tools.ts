@@ -15,11 +15,18 @@ import {
   saveAssessments,
   assessmentRows,
 } from "./assessment.js";
-import { WikiClient, snapshotPage } from "./wiki.js";
+import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { numberedLines } from "./documents.js";
 import { createReport } from "./reports.js";
 import { AppError } from "./errors.js";
 import { productScope, recommendProducts } from "./product-scope.js";
+import {
+  readCatalogPage,
+  searchSelected,
+  searchGlobalFallback,
+  alternativeSchema,
+  recordAlternative,
+} from "./product-search.js";
 import { loadSettings } from "./settings.js";
 export interface ToolContext {
   db: Database;
@@ -52,6 +59,28 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       };
     },
   });
+  const readWiki = async (
+    args: { path: string; start: number; count: number },
+    signal?: AbortSignal,
+  ) => {
+    const [p] = await db.query<{ wiki_project_id: string }>(
+      "SELECT wiki_project_id FROM projects WHERE id=$1",
+      [projectId],
+    );
+    const content = await new WikiClient(db, signal).read(
+      p.wiki_project_id,
+      args.path,
+    );
+    const snapshot = await snapshotPage(db, projectId, args.path, content);
+    const lines = content.split(/\r?\n/);
+    return {
+      snapshotId: snapshot.id,
+      path: args.path,
+      hash: snapshot.hash,
+      total: lines.length,
+      text: numberedLines(lines, args.start, args.count),
+    };
+  };
   return [
     tool(
       "project_context",
@@ -88,7 +117,19 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         );
         return {
           project,
+          productOverview: {
+            path: PRODUCT_OVERVIEW_PATH,
+            tool: "wiki_overview",
+            instruction:
+              "产品总览路径固定，直接调用 wiki_overview，无需搜索或猜测路径",
+          },
           productScope: await productScope(db, projectId),
+          searchWorkflow:
+            "先 wiki_product_catalog 完整读取已选产品销售项目录，再 wiki_search(requirementId) 产品内检索；未命中或证据不足才能 wiki_global_search。范围外结果 record_product_alternative，等待用户加入范围。",
+          alternatives: await db.query(
+            "SELECT id,data FROM audit_log WHERE project_id=$1 AND action='product_alternative' ORDER BY id DESC LIMIT 100",
+            [projectId],
+          ),
           documents,
           requirements,
           assessments: await assessmentRows(
@@ -210,14 +251,46 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       },
     ),
     tool(
-      "wiki_search",
-      "检索产品知识",
-      "在项目绑定的 LLM Wiki 中检索销售项；返回候选证据，必须用 wiki_read 读取实体页核实后保存匹配。",
+      "wiki_product_catalog",
+      "读取已选产品销售项目录",
+      "读取用户已选产品/版本的产品页及目录内销售项，分页直至 complete=true。禁止用全局搜索替代产品内目录检索。",
       z.object({
+        offset: z.number().int().min(0).default(0),
+        count: z.number().int().min(1).max(50).default(25),
+      }),
+      (args, signal) =>
+        readCatalogPage(db, projectId, runId, args.offset, args.count, signal),
+    ),
+    tool(
+      "wiki_search",
+      "产品内检索销售项",
+      "确认产品后仅检索已选产品目录内的正式销售项，必须提供已确认 requirementId。先完整读取 wiki_product_catalog。可更换关键词多次查询；不会自动全局搜索。未选产品阶段仅用于核实产品身份。",
+      z.object({
+        requirementId: z
+          .string()
+          .regex(/^T-\d+$/)
+          .optional(),
         query: z.string().min(1).max(500),
         topK: z.number().int().min(1).max(10).default(5),
       }),
       async (args, signal) => {
+        const scope = await productScope(db, projectId);
+        if (scope.status === "confirmed") {
+          if (!args.requirementId)
+            throw new AppError(
+              422,
+              "产品内检索必须提供已确认条款 requirementId",
+            );
+          return searchSelected(
+            db,
+            projectId,
+            runId,
+            args.requirementId,
+            args.query,
+            args.topK,
+            signal,
+          );
+        }
         const [p] = await db.query<{ wiki_project_id: string }>(
           "SELECT wiki_project_id FROM projects WHERE id=$1",
           [projectId],
@@ -232,39 +305,53 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           ? {
               truncated: true,
               result: text.slice(0, 50000),
-              note: "候选结果过长，缩小关键词并用 wiki_read 读取",
+              note: "结果过长，请缩小查询并读取实体页",
             }
           : result;
       },
     ),
     tool(
+      "wiki_global_search",
+      "证据不足时全局补查",
+      "仅在同一条款、本次产品范围已完成产品内检索后调用。记录 no_match 或 insufficient_evidence 的具体原因。范围外能力只能单列替代建议，不能直接纳入正式结果。",
+      z.object({
+        requirementId: z.string().regex(/^T-\d+$/),
+        query: z.string().min(1).max(500),
+        topK: z.number().int().min(1).max(10).default(5),
+        reason: z.enum(["no_match", "insufficient_evidence"]),
+        explanation: z.string().min(10).max(2000),
+      }),
+      (args, signal) =>
+        searchGlobalFallback(db, projectId, runId, args, signal),
+    ),
+    tool(
+      "record_product_alternative",
+      "记录范围外产品建议",
+      "全局补查后核实其它产品与版本的目录及销售项实体，记录可满足条款的替代建议和准确原文证据。用户点击加入匹配范围后才能正式匹配，Agent 无权自行加入。",
+      alternativeSchema,
+      (args) => recordAlternative(db, projectId, runId, args),
+    ),
+    tool(
+      "wiki_overview",
+      "读取产品总览",
+      "读取固定的 wiki/overview.md 产品总览并保存证据快照。产品推荐前直接调用，禁止搜索或猜测其它总览路径。支持按稳定行号分页。",
+      z.object({
+        start: z.number().int().positive().default(1),
+        count: z.number().int().min(1).max(250).default(160),
+      }),
+      async (args, signal) =>
+        readWiki({ ...args, path: PRODUCT_OVERVIEW_PATH }, signal),
+    ),
+    tool(
       "wiki_read",
       "读取知识库证据",
-      "读取 wiki 页面并保存不可变证据快照。必须按 总览 → 产品页 → 销售项详情 顺序核实。返回 snapshotId、稳定行号和原文，可分页。",
+      "读取 wiki 页面并保存不可变证据快照。产品总览固定 wiki/overview.md，优先调用 wiki_overview 读取；本工具用于产品页与销售项详情。返回 snapshotId、稳定行号和原文，可分页。",
       z.object({
         path: z.string().min(1),
         start: z.number().int().positive().default(1),
         count: z.number().int().min(1).max(250).default(160),
       }),
-      async (args, signal) => {
-        const [p] = await db.query<{ wiki_project_id: string }>(
-          "SELECT wiki_project_id FROM projects WHERE id=$1",
-          [projectId],
-        );
-        const content = await new WikiClient(db, signal).read(
-          p.wiki_project_id,
-          args.path,
-        );
-        const snapshot = await snapshotPage(db, projectId, args.path, content);
-        const lines = content.split(/\r?\n/);
-        return {
-          snapshotId: snapshot.id,
-          path: args.path,
-          hash: snapshot.hash,
-          total: lines.length,
-          text: numberedLines(lines, args.start, args.count),
-        };
-      },
+      readWiki,
     ),
     tool(
       "wiki_graph",

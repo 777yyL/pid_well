@@ -596,3 +596,37 @@
     grid-template-columns: 1fr;
   }
 }
+.product-details-button {
+  padding: 0;
+  height: auto;
+  white-space: normal;
+  font-size: 12px;
+  text-align: left;
+}
+.product-detail-modal .ant-modal-body {
+  max-height: 65vh;
+  overflow: auto;
+}
+.product-detail-modal h5 {
+  font-size: 14px;
+  color: #304762;
+  margin: 20px 0 8px;
+}
+
+.product-alternatives {
+  margin-top: 24px;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 16px;
+}
+.product-alternative-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.product-alternative-row p {
+  margin: 8px 0 0;
+  color: #475569;
+}

@@ -24,7 +24,11 @@ const names: Record<string, string> = {
   update_plan: "更新执行计划",
   read_document: "阅读招标原文",
   save_requirements: "保存抽取条款",
-  wiki_search: "检索产品知识",
+  wiki_search: "在已选产品内检索销售项",
+  wiki_product_catalog: "读取已选产品销售项目录",
+  wiki_global_search: "证据不足，进行全局补查",
+  record_product_alternative: "记录其他产品可满足的建议",
+  wiki_overview: "读取产品总览",
   wiki_read: "核实知识库证据",
   wiki_graph: "查看产品关联",
   save_assessments: "保存匹配结果",
@@ -111,6 +115,9 @@ export function Chat({
       return { event: e, finish };
     });
   const activeTools = tools.slice(-4);
+  const catalogProgress = events
+    .filter((e) => e.type === "catalog_progress")
+    .at(-1);
   const compaction = events
     .filter((e) => e.type === "context_compaction")
     .at(-1);
@@ -390,6 +397,14 @@ export function Chat({
                   ? "等待可用的执行名额，排队结束后自动开始。"
                   : "任务仍在执行；下方为已保存的真实进度。模型等待期间也会持续同步状态。"}
             </p>
+            {currentTool?.event.payload.toolName === "wiki_product_catalog" &&
+              catalogProgress && (
+                <p className="muted">
+                  销售项目录已读 {String(catalogProgress.payload.loaded)} /{" "}
+                  {String(catalogProgress.payload.total)} 页 ·{" "}
+                  {String(catalogProgress.payload.path)}
+                </p>
+              )}
             {progress && (
               <div className="activity-counts">
                 <span>

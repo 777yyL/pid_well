@@ -118,7 +118,9 @@ export function summaryInput(messages: AgentMessage[]) {
             .map((p) =>
               p.text.slice(
                 0,
-                m.toolName === "read_document" || m.toolName === "wiki_read"
+                m.toolName === "read_document" ||
+                  m.toolName === "wiki_read" ||
+                  m.toolName === "wiki_overview"
                   ? 200
                   : 1500,
               ),

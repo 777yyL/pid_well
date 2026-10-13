@@ -173,6 +173,47 @@ if (process.env.QA_PRODUCTS === "true") {
     [projectId, JSON.stringify(candidates)],
   );
 }
+if (process.env.QA_ALTERNATIVES === "true") {
+  const chosen = {
+    name: "当前门禁平台",
+    version: "v1",
+    path: "wiki/entities/products/current.md",
+  };
+  await db.query(
+    "INSERT INTO product_scopes(project_id,status,selected) VALUES($1,'confirmed',$2) ON CONFLICT(project_id) DO UPDATE SET status='confirmed',selected=$2",
+    [projectId, JSON.stringify([chosen])],
+  );
+  const page = await snapshotPage(
+    db,
+    projectId,
+    "wiki/entities/sale-items/alternative.md",
+    "# 视频联动\n支持通行事件与视频联动",
+  );
+  await db.query(
+    "INSERT INTO audit_log(project_id,action,data) VALUES($1,'product_alternative',$2)",
+    [
+      projectId,
+      JSON.stringify({
+        requirementId: "T-2",
+        product: {
+          name: "综合安防平台",
+          version: "v2.1",
+          path: "wiki/entities/products/alternative.md",
+        },
+        sales: "视频联动",
+        reason:
+          "当前门禁平台缺少视频联动证据。综合安防平台提供通行事件的视频联动能力，可作为组合产品补充。",
+        scopeRevision: 1,
+        evidence: {
+          snapshotId: page.id,
+          lineStart: 2,
+          lineEnd: 2,
+          quote: "支持通行事件与视频联动",
+        },
+      }),
+    ],
+  );
+}
 await app.listen({
   host: process.env.QA_HOST ?? "127.0.0.1",
   port: Number(process.env.QA_PORT ?? 4321),

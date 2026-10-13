@@ -3,6 +3,7 @@ import { loadSettings } from "./settings.js";
 import { AppError } from "./errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import { parse as parseYaml } from "yaml";
+export const PRODUCT_OVERVIEW_PATH = "wiki/overview.md";
 export class WikiClient {
   constructor(
     private db: Database,
@@ -72,7 +73,7 @@ export async function snapshotPage(
   const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   const meta = frontmatter ? parseYaml(frontmatter[1]) : null;
   const kind =
-    path === "wiki/overview.md"
+    path === PRODUCT_OVERVIEW_PATH
       ? "overview"
       : meta?.type === "product" ||
           meta?.tags?.includes("product") ||
@@ -84,6 +85,7 @@ export async function snapshotPage(
     path: string;
     content: string;
     hash: string;
+    kind: string;
   }>(
     `INSERT INTO snapshots(id,project_id,path,content,hash,kind) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,path,hash) DO UPDATE SET hash=EXCLUDED.hash RETURNING *`,
     [randomUUID(), projectId, path, content, hash, kind],

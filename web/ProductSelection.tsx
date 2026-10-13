@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   Alert,
+  Modal,
   App as AntApp,
   Button,
   Checkbox,
@@ -9,7 +10,7 @@ import {
   Space,
   Tag,
 } from "antd";
-import type { ProductScope } from "../shared/domain";
+import type { ProductScope, ProductAlternative } from "../shared/domain";
 import { api } from "./api";
 import { KnowledgeMarkdown } from "./KnowledgeReader";
 import { AppstoreOutlined } from "@ant-design/icons";
@@ -18,6 +19,7 @@ const key = (p: { name: string; version: string }) =>
 export function ProductSelection({
   projectId,
   scope,
+  alternatives,
   locked,
   active,
   onRefresh,
@@ -25,6 +27,7 @@ export function ProductSelection({
 }: {
   projectId: string;
   scope: ProductScope;
+  alternatives: ProductAlternative[];
   locked: boolean;
   active: boolean;
   onRefresh: () => Promise<void>;
@@ -32,8 +35,10 @@ export function ProductSelection({
 }) {
   const [form] = Form.useForm();
   const selectedProducts: string[] = Form.useWatch("choices", form) ?? [];
+  const [detailKey, setDetailKey] = useState<string | null>(null);
+  const detail = scope.recommendations.find((p) => key(p) === detailKey);
   const [busy, setBusy] = useState(false);
-  const { message } = AntApp.useApp();
+  const { message, modal } = AntApp.useApp();
   useEffect(() => {
     const recommended = new Set(scope.recommendations.map(key));
     const draft = form.getFieldsValue();
@@ -49,6 +54,27 @@ export function ProductSelection({
           : scope.strategy,
     });
   }, [projectId, scope.revision, form]);
+  async function addAlternative(p: ProductAlternative["data"]["product"]) {
+    setBusy(true);
+    try {
+      await api(`/projects/${projectId}/product-scope`, {
+        method: "PUT",
+        body: JSON.stringify({
+          expectedRevision: scope.revision,
+          selected: [...scope.selected, p],
+          strategy: scope.strategy,
+        }),
+      });
+      await onRefresh();
+      message.success(
+        "已加入匹配范围，请继续评估以核实正式匹配；已有结论未自动修改",
+      );
+    } catch (e) {
+      if (e instanceof Error) message.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function confirm() {
     setBusy(true);
     try {
@@ -99,7 +125,7 @@ export function ProductSelection({
           onClick={() => {
             setBusy(true);
             void onSend(
-              `请结合本项目招标清单，读取知识库总览，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
+              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
             )
               .catch(() => {})
               .finally(() => setBusy(false));
@@ -129,6 +155,101 @@ export function ProductSelection({
           showIcon
           message="推荐不等于选择。确认产品后，Agent 才会进入销售项匹配。"
         />
+      )}
+      <Modal
+        title={
+          detail
+            ? `${detail.name}${detail.version ? " · " + detail.version : ""}`
+            : "产品推荐详情"
+        }
+        open={!!detail}
+        onCancel={() => setDetailKey(null)}
+        footer={<Button onClick={() => setDetailKey(null)}>关闭</Button>}
+        width={720}
+        className="product-detail-modal"
+      >
+        {detail && (
+          <div className="knowledge-markdown">
+            <h5>推荐理由</h5>
+            <KnowledgeMarkdown text={detail.reason} />
+            <h5>覆盖方向</h5>
+            <KnowledgeMarkdown text={detail.coverage} />
+            {detail.gaps && (
+              <>
+                <h5>待核实 / 缺口</h5>
+                <KnowledgeMarkdown text={detail.gaps} />
+              </>
+            )}
+            {detail.path && <p className="muted">产品页：{detail.path}</p>}
+            {detail.evidence.map((e, i) => (
+              <section className="product-card-evidence" key={i}>
+                <b>
+                  总览证据 L{e.lineStart}–L{e.lineEnd}
+                </b>
+                <KnowledgeMarkdown text={e.quote} />
+              </section>
+            ))}
+          </div>
+        )}
+      </Modal>
+      {!!alternatives.length && (
+        <section className="product-alternatives">
+          <h4>其他产品可满足</h4>
+          <p className="muted">
+            以下为范围外建议，尚未计入正式匹配及销售清单。加入范围后继续评估。
+          </p>
+          {alternatives.map(({ id, data: a }) => {
+            const included = scope.selected.some(
+              (p) => key(p) === key(a.product),
+            );
+            return (
+              <article key={id} className="product-alternative-row">
+                <div>
+                  <Space wrap>
+                    <b>{a.product.name}</b>
+                    <Tag>{a.product.version || "版本待核实"}</Tag>
+                    <Tag>{a.requirementId}</Tag>
+                  </Space>
+                  <p>{a.sales}</p>
+                  <Button
+                    type="link"
+                    onClick={() =>
+                      modal.info({
+                        title: `${a.product.name} · ${a.requirementId}`,
+                        width: 640,
+                        content: (
+                          <>
+                            <KnowledgeMarkdown text={a.reason} />
+                            <h5>销售项原文证据</h5>
+                            <KnowledgeMarkdown text={a.evidence.quote} />
+                          </>
+                        ),
+                      })
+                    }
+                  >
+                    查看能力与证据
+                  </Button>
+                </div>
+                <Button
+                  disabled={
+                    included || active || busy || scope.status !== "confirmed"
+                  }
+                  onClick={() =>
+                    modal.confirm({
+                      title: `将 ${a.product.name} 加入匹配范围？`,
+                      content:
+                        "保留原产品及已有结论，后续评估可使用新增产品。不会自动纳入报告或销售清单。",
+                      okText: "加入范围",
+                      onOk: () => addAlternative(a.product),
+                    })
+                  }
+                >
+                  {included ? "已加入范围" : "加入匹配范围"}
+                </Button>
+              </article>
+            );
+          })}
+        </section>
       )}
       <Form
         form={form}
@@ -163,30 +284,13 @@ export function ProductSelection({
                     <span className="product-gap-label">有待核实项</span>
                   )}
                 </div>
-                <details className="product-card-details">
-                  <summary>查看推荐理由与覆盖情况</summary>
-                  <div className="knowledge-markdown">
-                    <h5>推荐理由</h5>
-                    <KnowledgeMarkdown text={p.reason} />
-                    <h5>覆盖方向</h5>
-                    <KnowledgeMarkdown text={p.coverage} />
-                    {p.gaps && (
-                      <>
-                        <h5>待核实 / 缺口</h5>
-                        <KnowledgeMarkdown text={p.gaps} />
-                      </>
-                    )}
-                    {p.path && <p className="muted">产品页：{p.path}</p>}
-                    {p.evidence.map((e, i) => (
-                      <section className="product-card-evidence" key={i}>
-                        <b>
-                          总览证据 L{e.lineStart}–L{e.lineEnd}
-                        </b>
-                        <KnowledgeMarkdown text={e.quote} />
-                      </section>
-                    ))}
-                  </div>
-                </details>
+                <Button
+                  className="product-details-button"
+                  type="link"
+                  onClick={() => setDetailKey(key(p))}
+                >
+                  查看推荐理由与覆盖情况
+                </Button>
               </article>
             ))}
           </Checkbox.Group>
@@ -255,7 +359,7 @@ export function ProductSelection({
           />
         </Form.Item>
         <p className="muted">
-          自定义产品仍需在知识库检索核实。产生匹配结果后锁定范围，避免混入不同选型的结论。
+          自定义产品仍需在知识库检索核实。产生匹配结果后保留原范围；可从已核实的替代建议追加产品。
         </p>
         <Space wrap>
           <Button

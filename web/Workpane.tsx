@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import {
+  Timeline,
+  Space,
   Tabs,
   Button,
   Table,
@@ -557,6 +559,43 @@ export function Workpane({
           description="建设背景、资质、评分办法和风险分析会保存在这里"
         />
       )}
+      {!!workspace.searchTrace?.length && (
+        <>
+          <h4 className="activity-heading">销售项检索过程 · 最近 200 次</h4>
+          <Timeline
+            items={[...workspace.searchTrace].reverse().map((t) => ({
+              color: t.action === "product_global_search" ? "orange" : "blue",
+              children: (
+                <>
+                  <Space wrap>
+                    <Tag>{t.data.requirementId}</Tag>
+                    <b>
+                      {t.action === "product_global_search"
+                        ? "全局补查"
+                        : "产品内检索"}
+                    </b>
+                    <span className="muted">
+                      产品范围 v{t.data.scopeRevision}
+                    </span>
+                  </Space>
+                  <p>关键词：{t.data.query}</p>
+                  {t.action === "product_global_search" ? (
+                    <p>
+                      补查原因：
+                      {t.data.reason === "no_match"
+                        ? "产品内未命中"
+                        : "证据不足"}{" "}
+                      · {t.data.explanation}
+                    </p>
+                  ) : (
+                    <p>找到 {t.data.matchCount ?? 0} 个目录内候选</p>
+                  )}
+                </>
+              ),
+            }))}
+          />
+        </>
+      )}
       <h4 className="activity-heading">执行记录</h4>
       {workspace.runs.map((run) => (
         <div className="execution-row" key={run.id}>
@@ -723,6 +762,7 @@ export function Workpane({
               <ProductSelection
                 projectId={workspace.project.id}
                 scope={workspace.productScope}
+                alternatives={workspace.alternatives ?? []}
                 locked={
                   results.length > 0 ||
                   workspace.productScope.status === "legacy"
