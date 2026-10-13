@@ -19,9 +19,7 @@ export type WorkspaceData = Workspace & {
 export function useWorkspace() {
   const { message } = AntApp.useApp();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState(
-    localStorage.getItem("workspace.project") ?? "",
-  );
+  const [projectId, setProjectId] = useState("");
   const [conversationId, setConversationId] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceData | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -39,10 +37,21 @@ export function useWorkspace() {
   selected.current = { projectId, conversationId };
   const refreshProjects = useCallback(async () => {
     const rows = await api<Project[]>("/projects");
+    const active = rows.filter((p) => !p.archived_at);
     setProjects(rows);
-    setProjectId((current) =>
-      rows.some((p) => p.id === current) ? current : (rows[0]?.id ?? ""),
-    );
+    setWorkspace((current) => {
+      if (!current) return current;
+      const project = rows.find((p) => p.id === current.project.id);
+      return project ? { ...current, project } : null;
+    });
+    setProjectId((current) => {
+      const preferred =
+        current || localStorage.getItem("workspace.project") || "";
+      return rows.some((p) => p.id === preferred)
+        ? preferred
+        : (active[0]?.id ?? "");
+    });
+    setLoadError("");
   }, []);
   const refresh = useCallback(async () => {
     const id = selected.current.projectId;

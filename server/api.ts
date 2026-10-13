@@ -110,6 +110,38 @@ export function routes(
     return { ok: true };
   });
   app.post(
+    "/api/auth/register",
+    { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      const input = credentials
+        .extend({ displayName: z.string().trim().min(1).max(80) })
+        .parse(request.body);
+      const [initialized] = await db.query(
+        "SELECT id FROM users WHERE role='admin' LIMIT 1",
+      );
+      if (!initialized) throw new AppError(409, "请先初始化管理员账号");
+      const id = randomUUID();
+      try {
+        await db.query(
+          "INSERT INTO users(id,username,display_name,password_hash,role) VALUES($1,$2,$3,$4,'member')",
+          [
+            id,
+            input.username,
+            input.displayName,
+            await hashPassword(input.password),
+          ],
+        );
+      } catch (error) {
+        if ((error as { code?: string }).code === "23505")
+          throw new AppError(409, "账号已被注册，请换一个账号或直接登录");
+        throw error;
+      }
+      const session = await issueSession(db, id);
+      reply.setCookie("workspace_session", session.token, session.options);
+      return { ok: true };
+    },
+  );
+  app.post(
     "/api/auth/password",
     { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } },
     async (request, reply) => {
@@ -209,7 +241,7 @@ export function routes(
   app.get("/api/projects", async (request) => {
     const user = requireUser(request);
     return db.query(
-      `SELECT p.* FROM projects p WHERE p.owner_id=$1 OR $2='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=$1) ORDER BY p.created_at DESC`,
+      `SELECT p.*,u.display_name AS owner_name,EXISTS(SELECT 1 FROM runs r WHERE r.project_id=p.id AND r.status IN ('queued','running')) AS active_run FROM projects p JOIN users u ON u.id=p.owner_id WHERE p.owner_id=$1 OR $2='admin' OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=p.id AND m.user_id=$1) ORDER BY p.created_at DESC`,
       [user.id, user.role],
     );
   });

@@ -31,6 +31,7 @@ import { Account } from "./Account";
 import { Chat } from "./Chat";
 import { Workpane } from "./Workpane";
 import { SharedResult } from "./SharedResult";
+import { ProjectManager } from "./ProjectManager";
 export function App() {
   const match = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
   return match ? (
@@ -84,6 +85,8 @@ function WorkspaceShell({
   const { message } = AntApp.useApp();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [projectSearch, setProjectSearch] = useState("");
   const [teamOpen, setTeamOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -133,16 +136,36 @@ function WorkspaceShell({
           </Tooltip>
         </div>
         <div className="project-list">
-          {state.projects.map((project) => (
-            <button
-              key={project.id}
-              className={`project-item ${state.projectId === project.id ? "active" : ""}`}
-              onClick={() => state.setProjectId(project.id)}
-            >
-              <span className="project-letter">{project.name.slice(0, 1)}</span>
-              <span>{project.name}</span>
-            </button>
-          ))}
+          <Button block size="small" onClick={() => setManagerOpen(true)}>
+            管理与查询项目
+          </Button>
+          <input
+            className="project-search"
+            aria-label="快速搜索项目"
+            placeholder="搜索项目名称"
+            value={projectSearch}
+            onChange={(e) => setProjectSearch(e.target.value)}
+          />
+          {state.projects
+            .filter(
+              (p) =>
+                (!p.archived_at || p.id === state.projectId) &&
+                p.name
+                  .toLowerCase()
+                  .includes(projectSearch.trim().toLowerCase()),
+            )
+            .map((project) => (
+              <button
+                key={project.id}
+                className={`project-item ${state.projectId === project.id ? "active" : ""}`}
+                onClick={() => state.setProjectId(project.id)}
+              >
+                <span className="project-letter">
+                  {project.name.slice(0, 1)}
+                </span>
+                <span>{project.name}</span>
+              </button>
+            ))}
           {state.projects.length === 0 && (
             <p className="sidebar-empty">新建项目，组织文件与评估会话。</p>
           )}
@@ -159,6 +182,7 @@ function WorkspaceShell({
                   icon={<PlusOutlined />}
                   onClick={() => void state.newConversation()}
                   aria-label="新会话"
+                  disabled={!!state.workspace?.project.archived_at}
                 />
               </Tooltip>
             </div>
@@ -303,6 +327,7 @@ function WorkspaceShell({
         ) : state.workspace ? (
           <div className={`workspace-columns mobile-${mobilePane}`}>
             <Chat
+              archived={!!state.workspace.project.archived_at}
               connectionError={state.loadError}
               messages={state.messages}
               events={state.events}
@@ -380,8 +405,20 @@ function WorkspaceShell({
         onClose={() => setProjectOpen(false)}
         onCreated={(id) => {
           setProjectOpen(false);
+          setManagerOpen(false);
           void state.refreshProjects().then(() => state.setProjectId(id));
         }}
+      />
+      <ProjectManager
+        open={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        user={user}
+        onChanged={state.refreshProjects}
+        onOpen={(id) => {
+          state.setProjectId(id);
+          setManagerOpen(false);
+        }}
+        onCreate={() => setProjectOpen(true)}
       />
       <Team
         open={teamOpen}

@@ -12,6 +12,7 @@ import { attachAuth } from "./auth.js";
 import { routes } from "./api.js";
 import { AgentRunner } from "./agent.js";
 import { shareRoutes } from "./shares.js";
+import { projectRoutes } from "./projects.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
     logger: {
@@ -50,6 +51,7 @@ export async function createApp(db: Database, serveWeb = false) {
     }),
   });
   const runner = new AgentRunner(db);
+  projectRoutes(app, db);
   routes(app, db, runner);
   shareRoutes(app, db);
   app.setErrorHandler((error, request, reply) => {

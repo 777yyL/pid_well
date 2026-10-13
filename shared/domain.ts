@@ -75,6 +75,9 @@ export interface User {
   role: "admin" | "member";
 }
 export interface Project {
+  archived_at?: string | null;
+  owner_name?: string;
+  active_run?: boolean;
   id: string;
   name: string;
   description: string;

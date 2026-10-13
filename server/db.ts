@@ -104,6 +104,7 @@ const migrations = [
   `INSERT INTO product_scopes(project_id,status) SELECT p.id,CASE WHEN EXISTS(SELECT 1 FROM assessments a WHERE a.project_id=p.id) THEN 'legacy' ELSE 'pending' END FROM projects p ON CONFLICT DO NOTHING`,
   `CREATE TABLE IF NOT EXISTS result_shares (id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id),created_by uuid NOT NULL REFERENCES users(id),token_hash text UNIQUE NOT NULL,token_cipher text NOT NULL,snapshot jsonb NOT NULL,artifact_ids uuid[] NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),expires_at timestamptz NOT NULL,revoked_at timestamptz)`,
   `CREATE INDEX IF NOT EXISTS result_shares_project ON result_shares(project_id,created_at DESC)`,
+  `ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at timestamptz`,
 ];
 export async function migrate(db: Database) {
   await db.transaction(async (tx) => {
@@ -119,6 +120,9 @@ export async function migrate(db: Database) {
     );
     await tx.query(
       "INSERT INTO schema_migrations(version) VALUES(4) ON CONFLICT DO NOTHING",
+    );
+    await tx.query(
+      "INSERT INTO schema_migrations(version) VALUES(5) ON CONFLICT DO NOTHING",
     );
   });
 }

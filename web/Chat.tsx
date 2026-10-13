@@ -67,6 +67,7 @@ export function Chat({
   onUpload,
   hasDocuments,
   connectionError,
+  archived = false,
 }: {
   messages: ChatMessage[];
   events: RunEvent[];
@@ -75,6 +76,7 @@ export function Chat({
   activeRun?: Run;
   latestRun?: Run;
   sending: boolean;
+  archived?: boolean;
   onSend: (text: string) => Promise<void>;
   onCancel: () => void;
   onUpload: () => void;
@@ -140,7 +142,7 @@ export function Chat({
         (_, name: string) => names[name] ?? name,
       );
   async function submit(text = draft) {
-    if (!text.trim() || activeRun || sending) return;
+    if (!text.trim() || activeRun || sending || archived) return;
     try {
       await onSend(text);
       setDraft("");
@@ -327,6 +329,14 @@ export function Chat({
             </div>
           </article>
         )}
+        {archived && (
+          <Alert
+            type="info"
+            showIcon
+            message="项目已归档"
+            description="可查看历史对话和结果。需要继续评估时，请在项目管理中恢复项目。"
+          />
+        )}
         {activeRun && !sameConversation && (
           <div className="live-activity" role="status">
             此项目的另一个会话正在执行。请在左侧切换到该会话查看实时进度；本项目同时只能执行一个任务。
@@ -449,7 +459,7 @@ export function Chat({
               void submit();
             }
           }}
-          disabled={!!activeRun}
+          disabled={!!activeRun || archived}
         />
         <div className="composer-bottom">
           <div>
@@ -459,6 +469,7 @@ export function Chat({
                 icon={<PaperClipOutlined />}
                 onClick={onUpload}
                 aria-label="上传招标文件"
+                disabled={archived}
               />
             </Tooltip>
             <span>Enter 发送 · Shift + Enter 换行</span>
@@ -473,7 +484,7 @@ export function Chat({
               shape="circle"
               icon={<ArrowUpOutlined />}
               loading={sending}
-              disabled={!draft.trim()}
+              disabled={!draft.trim() || archived}
               aria-label="发送消息"
               onClick={() => void submit()}
             />

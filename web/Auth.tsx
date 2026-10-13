@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Button, Form, Input, Typography } from "antd";
+import { Alert, Button, Form, Input, Typography, Segmented } from "antd";
 import { ArrowRightOutlined, FileSearchOutlined } from "@ant-design/icons";
 import { post } from "./api";
 export function Auth({
@@ -11,11 +11,17 @@ export function Auth({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [mode, setMode] = useState("login");
+  const registering = !setup && mode === "register";
+  const creating = setup || registering;
   async function submit(values: Record<string, string>) {
     setBusy(true);
     setError("");
     try {
-      await post(`/auth/${setup ? "setup" : "login"}`, values);
+      await post(
+        `/auth/${setup ? "setup" : registering ? "register" : "login"}`,
+        values,
+      );
       onSuccess();
     } catch (e) {
       setError((e as Error).message);
@@ -55,15 +61,40 @@ export function Auth({
       <section className="auth-form">
         <p className="eyebrow">WORKSPACE ACCESS</p>
         <Typography.Title level={2}>
-          {setup ? "建立你的工作空间" : "欢迎回来"}
+          {setup
+            ? "建立你的工作空间"
+            : registering
+              ? "加入团队工作空间"
+              : "欢迎回来"}
         </Typography.Title>
         <p className="muted">
           {setup
             ? "首次使用，创建管理员账号。随后配置模型和产品知识库。"
-            : "登录后继续你的项目与评估会话。"}
+            : registering
+              ? "注册普通成员账号，开始你的招标评估。"
+              : "登录后继续你的项目与评估会话。"}
         </p>
         {error && <Alert type="error" showIcon message={error} />}
-        <Form layout="vertical" onFinish={submit} requiredMark={false}>
+        {!setup && (
+          <Segmented
+            block
+            value={mode}
+            options={[
+              { label: "登录", value: "login" },
+              { label: "注册", value: "register" },
+            ]}
+            onChange={(value) => {
+              setMode(value);
+              setError("");
+            }}
+          />
+        )}
+        <Form
+          key={mode}
+          layout="vertical"
+          onFinish={submit}
+          requiredMark={false}
+        >
           <Form.Item
             name="username"
             label="账号"
@@ -77,7 +108,7 @@ export function Auth({
           >
             <Input autoComplete="username" size="large" />
           </Form.Item>
-          {setup && (
+          {creating && (
             <Form.Item
               name="displayName"
               label="姓名"
@@ -91,15 +122,38 @@ export function Auth({
             label="密码"
             rules={[
               { required: true, message: "请输入密码" },
-              ...(setup ? [{ min: 10, message: "至少 10 个字符" }] : []),
+              ...(creating ? [{ min: 10, message: "至少 10 个字符" }] : []),
             ]}
           >
             <Input.Password
-              autoComplete={setup ? "new-password" : "current-password"}
+              autoComplete={creating ? "new-password" : "current-password"}
               size="large"
               maxLength={256}
             />
           </Form.Item>
+          {creating && (
+            <Form.Item
+              name="confirmPassword"
+              label="确认密码"
+              dependencies={["password"]}
+              rules={[
+                { required: true, message: "请再次输入密码" },
+                ({ getFieldValue }) => ({
+                  validator(_, value) {
+                    return !value || value === getFieldValue("password")
+                      ? Promise.resolve()
+                      : Promise.reject(new Error("两次密码不一致"));
+                  },
+                }),
+              ]}
+            >
+              <Input.Password
+                autoComplete="new-password"
+                size="large"
+                maxLength={256}
+              />
+            </Form.Item>
+          )}
           <Button
             type="primary"
             htmlType="submit"
@@ -109,7 +163,11 @@ export function Auth({
             icon={<ArrowRightOutlined />}
             iconPosition="end"
           >
-            {setup ? "创建工作空间" : "进入工作台"}
+            {setup
+              ? "创建工作空间"
+              : registering
+                ? "注册并进入工作台"
+                : "进入工作台"}
           </Button>
         </Form>
         <small className="muted">
