@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { KnowledgeMarkdown } from "./KnowledgeReader";
 import {
   Alert,
   Button,
@@ -12,7 +13,7 @@ import {
 } from "antd";
 import {
   DownloadOutlined,
-  FileSearchOutlined,
+  CompassOutlined,
   LockOutlined,
 } from "@ant-design/icons";
 import type { SharedResult as Result, SharedAssessment } from "../shared/share";
@@ -148,8 +149,8 @@ export function SharedResult({ token }: { token: string }) {
   return (
     <main className="shared-result">
       <div className="shared-brand">
-        <FileSearchOutlined />
-        <b>标研</b>
+        <CompassOutlined />
+        <b>评标AI</b>
         <span>售前评估成果</span>
         <span className="shared-readonly">
           <LockOutlined /> 只读分享 · 无需登录
@@ -287,55 +288,98 @@ export function SharedResult({ token }: { token: string }) {
           />
         </section>
       ) : (
-        <section className="shared-sales">
+        <section className="shared-sales shared-sales-list">
           {result.sales.length ? (
-            result.sales.map((sale, i) => (
-              <article key={`${sale.moduleId}-${i}`}>
-                <header>
-                  <h2>
-                    {i + 1}. {sale.title}
-                  </h2>
-                  <Tag>
-                    {sale.product} {sale.version}
-                  </Tag>
-                </header>
-                <dl>
-                  {[
-                    ["产品类别", sale.category],
-                    ["型号", sale.moduleId],
-                    ["单位", sale.unit],
-                    ["数量", sale.quantity ?? "待销售核定"],
-                    ["单价", sale.price ?? "知识库未提供"],
-                    [
-                      "合价",
-                      sale.total ??
-                        (sale.quantity !== undefined && sale.price !== undefined
-                          ? sale.quantity * sale.price
-                          : "待核定"),
-                    ],
-                  ].map(([key, value]) => (
-                    <div key={key}>
-                      <dt>{key}</dt>
-                      <dd>{value === "" ? "知识库未提供" : value}</dd>
+            Array.from(
+              new Map(
+                result.sales.map((sale) => [
+                  JSON.stringify([sale.product, sale.version]),
+                  { product: sale.product, version: sale.version },
+                ]),
+              ).values(),
+            ).map((group) => {
+              const sales = result.sales.filter(
+                (sale) =>
+                  sale.product === group.product &&
+                  sale.version === group.version,
+              );
+              return (
+                <section
+                  className="shared-product-group"
+                  key={JSON.stringify([group.product, group.version])}
+                >
+                  <header className="shared-product-heading">
+                    <div>
+                      <h2>{group.product || "未标明产品"}</h2>
+                      {group.version && <Tag>{group.version}</Tag>}
                     </div>
+                    <span>{sales.length} 项销售项</span>
+                  </header>
+                  <div className="shared-sales-columns" aria-hidden="true">
+                    <span>销售项 / 型号</span>
+                    <span>单价 / 单位</span>
+                    <span>数量</span>
+                    <span>合价</span>
+                    <span>详情</span>
+                  </div>
+                  {sales.map((sale, index) => (
+                    <details
+                      className="shared-sale-row"
+                      key={`${sale.moduleId}-${index}`}
+                    >
+                      <summary>
+                        <span className="shared-sale-name">
+                          <b>{sale.title}</b>
+                          <small>{sale.moduleId || "型号未提供"}</small>
+                        </span>
+                        <span className="shared-sale-price">
+                          <small className="sale-mobile-label">单价</small>
+                          {sale.price ?? "未提供"}
+                          <small>{sale.unit ? ` / ${sale.unit}` : ""}</small>
+                        </span>
+                        <span>
+                          <small className="sale-mobile-label">数量</small>
+                          {sale.quantity ?? "待核定"}
+                        </span>
+                        <span>
+                          <small className="sale-mobile-label">合价</small>
+                          {sale.total ??
+                            (sale.quantity !== undefined &&
+                            sale.price !== undefined
+                              ? sale.quantity * sale.price
+                              : "待核定")}
+                        </span>
+                        <span className="sale-expand-label">展开</span>
+                      </summary>
+                      <div className="shared-sale-body knowledge-markdown">
+                        <p className="shared-sale-context">
+                          产品类别：{sale.category || "未提供"} · 关联条款：
+                          {sale.requirements.join("、") || "未提供"}
+                        </p>
+                        <h3>技术规格</h3>
+                        <KnowledgeMarkdown
+                          text={sale.specification || "知识库未提供"}
+                        />
+                        <h3>报价与交付说明</h3>
+                        <KnowledgeMarkdown
+                          text={
+                            [
+                              sale.description,
+                              sale.quotation,
+                              sale.dependencyNote &&
+                                `依赖：${sale.dependencyNote}`,
+                              sale.mandatory && `必选：${sale.mandatory}`,
+                            ]
+                              .filter(Boolean)
+                              .join("\n\n") || "知识库未提供"
+                          }
+                        />
+                      </div>
+                    </details>
                   ))}
-                </dl>
-                <h3>技术规格（完整原文）</h3>
-                <p>{sale.specification || "知识库未提供"}</p>
-                <h3>报价与交付说明</h3>
-                <p>
-                  {[
-                    sale.description,
-                    sale.quotation,
-                    sale.dependencyNote && `依赖：${sale.dependencyNote}`,
-                    sale.mandatory && `必选：${sale.mandatory}`,
-                  ]
-                    .filter(Boolean)
-                    .join("\n")}
-                </p>
-                <small>关联条款：{sale.requirements.join("、")}</small>
-              </article>
-            ))
+                </section>
+              );
+            })
           ) : (
             <Empty description="没有匹配销售项" />
           )}

@@ -15,6 +15,7 @@ import {
   Collapse,
   Dropdown,
   Tooltip,
+  Pagination,
 } from "antd";
 import {
   UploadOutlined,
@@ -29,7 +30,6 @@ import type {
   Assessment,
   Document,
   Requirement,
-  Snapshot,
   RunEvent,
 } from "../shared/domain";
 import type { WorkspaceData } from "./useWorkspace";
@@ -37,6 +37,7 @@ import { api, post } from "./api";
 import { Markdown } from "./Chat";
 import { ProductSelection } from "./ProductSelection";
 import { ShareDialog } from "./ShareDialog";
+import { KnowledgeReader, KnowledgeMarkdown } from "./KnowledgeReader";
 const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
@@ -58,6 +59,13 @@ export function Workpane({
   const { message } = AntApp.useApp();
   const fileInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState("requirements");
+  const [knowledgePage, setKnowledgePage] = useState(1);
+  const [knowledgeSearch, setKnowledgeSearch] = useState("");
+  const [knowledge, setKnowledge] = useState<{
+    id: string;
+    start?: number;
+    end?: number;
+  } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [selected, setSelected] = useState<React.Key[]>([]);
   const [filter, setFilter] = useState("all");
@@ -144,18 +152,7 @@ export function Workpane({
     void openDocument(item.documentId, item.lineStart, item.lineEnd);
   }
   async function openEvidence(snapshotId: string, start: number, end: number) {
-    try {
-      const snap = await api<Snapshot>(`/snapshots/${snapshotId}`);
-      setSource({
-        title: snap.path,
-        lines: snap.content.split(/\r?\n/),
-        start,
-        end,
-        viewStart: Math.max(0, start - 30),
-      });
-    } catch (e) {
-      message.error((e as Error).message);
-    }
+    setKnowledge({ id: snapshotId, start, end });
   }
   async function exportReport(format: string) {
     setBusy(true);
@@ -611,6 +608,105 @@ export function Workpane({
         onChange={setTab}
         items={[
           {
+            key: "knowledge",
+            label: `知识库 ${workspace.snapshots.length}`,
+            children: (
+              <div className="knowledge-library">
+                <div className="knowledge-library-header">
+                  <h3>项目知识库</h3>
+                  <p>
+                    Agent 已读取的 Markdown 页面与证据快照。点击卡片查看正文。
+                  </p>
+                  <Input.Search
+                    aria-label="搜索知识库来源"
+                    placeholder="搜索来源名称或路径"
+                    value={knowledgeSearch}
+                    onChange={(e) => {
+                      setKnowledgeSearch(e.target.value);
+                      setKnowledgePage(1);
+                    }}
+                    allowClear
+                  />
+                </div>
+                <div className="knowledge-card-grid">
+                  {workspace.snapshots
+                    .filter((s) =>
+                      `${s.title ?? ""} ${s.path}`
+                        .toLowerCase()
+                        .includes(knowledgeSearch.toLowerCase()),
+                    )
+                    .slice((knowledgePage - 1) * 12, knowledgePage * 12)
+                    .map((s) => {
+                      const quote = results
+                        .flatMap((r) => r.evidence)
+                        .find((e) => e.snapshotId === s.id)?.quote;
+                      return (
+                        <article className="knowledge-small-card" key={s.id}>
+                          <span className="knowledge-card-label">
+                            <FileTextOutlined /> Markdown · 证据快照
+                          </span>
+                          <button
+                            className="knowledge-card-title"
+                            onClick={() => setKnowledge({ id: s.id })}
+                          >
+                            {s.title ||
+                              s.path
+                                .split(/[\\/]/)
+                                .pop()
+                                ?.replace(/\.md$/i, "")}
+                          </button>
+                          <p className="knowledge-card-path" title={s.path}>
+                            {s.path}
+                          </p>
+                          <div className="knowledge-card-preview">
+                            {quote ? (
+                              <KnowledgeMarkdown text={quote} />
+                            ) : (
+                              <p>原文按需加载，查看产品说明与技术规格。</p>
+                            )}
+                          </div>
+                          <Button
+                            type="link"
+                            onClick={() => setKnowledge({ id: s.id })}
+                          >
+                            阅读原文 <ArrowRightOutlined />
+                          </Button>
+                        </article>
+                      );
+                    })}
+                </div>
+                {!workspace.snapshots.filter((s) =>
+                  `${s.title ?? ""} ${s.path}`
+                    .toLowerCase()
+                    .includes(knowledgeSearch.toLowerCase()),
+                ).length && (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description={
+                      knowledgeSearch
+                        ? "没有匹配的知识库来源"
+                        : "Agent 读取知识库后，证据页面将在这里积累"
+                    }
+                  />
+                )}
+                <Pagination
+                  current={knowledgePage}
+                  pageSize={12}
+                  total={
+                    workspace.snapshots.filter((s) =>
+                      `${s.title ?? ""} ${s.path}`
+                        .toLowerCase()
+                        .includes(knowledgeSearch.toLowerCase()),
+                    ).length
+                  }
+                  onChange={setKnowledgePage}
+                  hideOnSinglePage
+                  showSizeChanger={false}
+                />
+              </div>
+            ),
+          },
+          {
             key: "requirements",
             label: (
               <>
@@ -802,7 +898,10 @@ export function Workpane({
               );
               return (
                 <div className="evidence-card" key={index}>
-                  <blockquote>{e.quote}</blockquote>
+                  <span className="knowledge-card-label">
+                    知识库证据 · Markdown
+                  </span>
+                  <KnowledgeMarkdown text={e.quote} />
                   <button
                     className="text-link"
                     onClick={() =>
@@ -885,6 +984,7 @@ export function Workpane({
           </details>
         ))}
       </Drawer>
+      <KnowledgeReader target={knowledge} onClose={() => setKnowledge(null)} />
     </section>
   );
 }

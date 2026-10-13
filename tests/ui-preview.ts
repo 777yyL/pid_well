@@ -37,26 +37,146 @@ await db.query(
 );
 const { app } = await createApp(db, true);
 if (process.env.QA_REPORTS === "true") {
-  await db.query("UPDATE projects SET name='园区安防 · 成果展示验证（隔离测试）' WHERE id=$1", [projectId]);
-  await db.query("INSERT INTO product_scopes(project_id,status) VALUES($1,'legacy')", [projectId]);
+  await db.query(
+    "UPDATE projects SET name='园区安防 · 成果展示验证（隔离测试）' WHERE id=$1",
+    [projectId],
+  );
+  await db.query(
+    "INSERT INTO product_scopes(project_id,status) VALUES($1,'legacy')",
+    [projectId],
+  );
   const documentId = randomUUID();
-  const lines = ["支持门禁权限管理及人员通行事件查询。", "应支持跨主机多门互锁，最多128个门，并支持视频联动。", "前端摄像机应具备设备硬件安全认证能力。"];
-  await db.query("INSERT INTO documents(id,project_id,name,storage_name,hash,status,lines) VALUES($1,$2,'界面验证清单.txt','qa-only','qa-only','ready',$3)", [documentId, projectId, JSON.stringify(lines)]);
-  const specification = "【功能介绍】\n支持人员门禁权限分组、通行事件查询、单机多门互锁与反潜回。认证方式及设备能力以实际部署为准。\n【性能规格】\n单个控制器最多4门互锁。跨主机128门互锁规格尚未在该测试证据中提供。\n".repeat(6);
-  const access = await snapshotPage(db, projectId, "wiki/entities/access-qa.md", `---\ntype: sale-item\ntitle: 门禁管理\nproduct: 界面验证产品\nversion: v1\nmodule_id: ACS-001\nunit: 套\nfixed_price: 5000\n---\n## 技术规格\n${specification}\n## 报价说明\n5000元/套，数量由销售核定。`);
-  const video = await snapshotPage(db, projectId, "wiki/entities/video-qa.md", "---\ntype: sale-item\ntitle: 视频管理\nproduct: 界面验证产品\nversion: v1\nmodule_id: VMS-001\nunit: 套\nfixed_price: 0\n---\n## 技术规格\n支持实时预览、事件视频联动和录像查询。");
-  const levels = ["exact","partial","no_match"] as const;
+  const lines = [
+    "支持门禁权限管理及人员通行事件查询。",
+    "应支持跨主机多门互锁，最多128个门，并支持视频联动。",
+    "前端摄像机应具备设备硬件安全认证能力。",
+  ];
+  await db.query(
+    "INSERT INTO documents(id,project_id,name,storage_name,hash,status,lines) VALUES($1,$2,'界面验证清单.txt','qa-only','qa-only','ready',$3)",
+    [documentId, projectId, JSON.stringify(lines)],
+  );
+  const specification =
+    "【功能介绍】\n支持人员门禁权限分组、通行事件查询、单机多门互锁与反潜回。认证方式及设备能力以实际部署为准。\n【性能规格】\n单个控制器最多4门互锁。跨主机128门互锁规格尚未在该测试证据中提供。\n".repeat(
+      6,
+    );
+  const access = await snapshotPage(
+    db,
+    projectId,
+    "wiki/entities/access-qa.md",
+    `---\ntype: sale-item\ntitle: 门禁管理\nproduct: 界面验证产品\nversion: v1\nmodule_id: ACS-001\nunit: 套\nfixed_price: 5000\n---\n## 技术规格\n${specification}\n## 报价说明\n5000元/套，数量由销售核定。`,
+  );
+  const video = await snapshotPage(
+    db,
+    projectId,
+    "wiki/entities/video-qa.md",
+    "---\ntype: sale-item\ntitle: 视频管理\nproduct: 界面验证产品\nversion: v1\nmodule_id: VMS-001\nunit: 套\nfixed_price: 0\n---\n## 技术规格\n支持实时预览、事件视频联动和录像查询。",
+  );
+  const levels = ["exact", "partial", "no_match"] as const;
   for (const [index, level] of levels.entries()) {
-    const requirementId = `T-${index+1}`;
-    await db.query("INSERT INTO requirements(id,project_id,data,confirmed) VALUES($1,$2,$3,true)", [requirementId, projectId, JSON.stringify({id:requirementId,documentId,module:"人员通行与视频",type:"功能",raw:lines[index],lineStart:index+1,lineEnd:index+1})]);
-    await db.query("INSERT INTO assessments(id,project_id,requirement_id,data,source,reviewed) VALUES($1,$2,$3,$4,$5,true)", [randomUUID(),projectId,requirementId,JSON.stringify({requirementId,product:"界面验证产品",version:"v1",sales:level==="no_match"?[]:index===0?["门禁管理"]:["门禁管理","视频管理"],level,ok:level==="no_match"?[]:["权限管理与事件查询能力已具备"],hard:level==="partial"?["跨主机128门互锁规格需要产品与交付团队核实"]:[],no:level==="no_match"?["软件销售项不覆盖摄像机硬件安全认证"]:[],note:"隔离测试数据：仅用于验证成果物排版与分享，不作为业务结论。",criteria:{direction:"人员通行与视频方向一致",scope:"仅覆盖测试证据明确说明的功能",spec:"跨主机性能规格未提供",context:"园区安防验证场景",delivery:"投标前需确认授权、设备与交付范围"},evidence:(index===1?[access,video]:[access]).map((page) => ({snapshotId:page.id,lineStart:1,lineEnd:1,quote:"---"})),dependencies:[],mustSelect:[]}),index===0?"human":"agent"]);
+    const requirementId = `T-${index + 1}`;
+    await db.query(
+      "INSERT INTO requirements(id,project_id,data,confirmed) VALUES($1,$2,$3,true)",
+      [
+        requirementId,
+        projectId,
+        JSON.stringify({
+          id: requirementId,
+          documentId,
+          module: "人员通行与视频",
+          type: "功能",
+          raw: lines[index],
+          lineStart: index + 1,
+          lineEnd: index + 1,
+        }),
+      ],
+    );
+    await db.query(
+      "INSERT INTO assessments(id,project_id,requirement_id,data,source,reviewed) VALUES($1,$2,$3,$4,$5,true)",
+      [
+        randomUUID(),
+        projectId,
+        requirementId,
+        JSON.stringify({
+          requirementId,
+          product: "界面验证产品",
+          version: "v1",
+          sales:
+            level === "no_match"
+              ? []
+              : index === 0
+                ? ["门禁管理"]
+                : ["门禁管理", "视频管理"],
+          level,
+          ok: level === "no_match" ? [] : ["权限管理与事件查询能力已具备"],
+          hard:
+            level === "partial"
+              ? ["跨主机128门互锁规格需要产品与交付团队核实"]
+              : [],
+          no:
+            level === "no_match" ? ["软件销售项不覆盖摄像机硬件安全认证"] : [],
+          note: "隔离测试数据：仅用于验证成果物排版与分享，不作为业务结论。",
+          criteria: {
+            direction: "人员通行与视频方向一致",
+            scope: "仅覆盖测试证据明确说明的功能",
+            spec: "跨主机性能规格未提供",
+            context: "园区安防验证场景",
+            delivery: "投标前需确认授权、设备与交付范围",
+          },
+          evidence: (index === 1 ? [access, video] : [access]).map((page) => ({
+            snapshotId: page.id,
+            lineStart: 1,
+            lineEnd: 1,
+            quote: "---",
+          })),
+          dependencies: [],
+          mustSelect: [],
+        }),
+        index === 0 ? "human" : "agent",
+      ],
+    );
   }
   const frozen = await captureReport(db, projectId);
   await createReport(db, projectId, "xlsx", "full", frozen);
   await createReport(db, projectId, "xlsx", "sales", frozen);
-  app.get("/qa/report", async (_request, reply) => reply.type("text/html").send(renderReportHtml(frozen,"隔离验证报告")));
+  app.get("/qa/report", async (_request, reply) =>
+    reply.type("text/html").send(renderReportHtml(frozen, "隔离验证报告")),
+  );
 }
-await app.listen({ host: process.env.QA_HOST ?? "127.0.0.1", port: Number(process.env.QA_PORT ?? 4321) });
+if (process.env.QA_PRODUCTS === "true") {
+  const quote =
+    "园区平台支持视频管理、人员通行和事件联动；轻量平台适合独立门禁场景。";
+  const page = await snapshotPage(db, projectId, "wiki/overview.md", quote);
+  const candidates = [
+    {
+      name: "园区综合管理平台",
+      version: "v2.1",
+      reason:
+        "推荐优先评估园区综合平台，统一视频与门禁业务。多子系统协作场景下可减少重复建设，并保留事件联动能力，具体授权范围仍需核实。",
+      coverage: "- 视频管理与录像查询\n- 人员通行与权限管理\n- 事件联动",
+      gaps: "跨主机容量与第三方集成需核实",
+    },
+    {
+      name: "轻量门禁平台",
+      version: "v1.0",
+      reason:
+        "适用于独立门禁场景，功能范围明确、部署简单。若项目涉及视频联动或复杂系统整合，需要补充产品能力证据。",
+      coverage: "人员通行、门禁权限与事件查询",
+      gaps: "综合视频能力尚未核实",
+    },
+  ].map((p) => ({
+    ...p,
+    path: "wiki/entities/qa-product.md",
+    evidence: [{ snapshotId: page.id, lineStart: 1, lineEnd: 1, quote }],
+  }));
+  await db.query(
+    "INSERT INTO product_scopes(project_id,recommendations) VALUES($1,$2) ON CONFLICT(project_id) DO UPDATE SET status='pending',recommendations=$2",
+    [projectId, JSON.stringify(candidates)],
+  );
+}
+await app.listen({
+  host: process.env.QA_HOST ?? "127.0.0.1",
+  port: Number(process.env.QA_PORT ?? 4321),
+});
 async function close() {
   await app.close();
   await db.close();

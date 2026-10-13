@@ -4,7 +4,6 @@ import {
   Modal,
   Input,
   Select,
-  Drawer,
   Dropdown,
   Empty,
   Pagination,
@@ -96,274 +95,276 @@ export function ProjectManager({
   );
   return (
     <>
-      <Drawer
-        title={null}
-        open={open}
-        onClose={onClose}
-        width="min(1180px, 100vw)"
-        className="project-hub"
-        closable={false}
-      >
-        <header className="project-hub-header">
-          <div>
-            <span className="project-hub-eyebrow">售前工作空间</span>
-            <h1>评估项目</h1>
-            <p>从招标清单到评估交付，持续跟进每一个项目。</p>
-          </div>
-          <Space>
-            <Button
-              type="primary"
-              size="large"
-              icon={<PlusOutlined />}
-              onClick={onCreate}
-            >
-              新建项目
-            </Button>
-            <Button size="large" onClick={onClose}>
-              返回工作台
-            </Button>
-          </Space>
-        </header>
-        <div className="project-hub-controls">
-          <Segmented
-            aria-label="项目状态"
-            value={status}
-            onChange={setStatus}
-            options={[
-              {
-                value: "active",
-                label: `进行中的项目 · ${rows.filter((p) => !p.archived_at).length}`,
-              },
-              {
-                value: "archived",
-                label: `已归档 · ${rows.filter((p) => p.archived_at).length}`,
-              },
-              { value: "all", label: "全部" },
-            ]}
-          />
-          <div className="project-hub-search">
-            <Input
-              prefix={<SearchOutlined />}
-              aria-label="搜索项目"
-              placeholder="搜索项目、背景或负责人"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              allowClear
-              size="large"
-            />
-            <Select
-              aria-label="项目范围"
-              value={scope}
-              onChange={setScope}
-              options={[
-                { value: "all", label: "全部可访问" },
-                { value: "mine", label: "我负责的" },
-              ]}
-              size="large"
-            />
-            <Button
-              aria-label="刷新项目"
-              icon={<ReloadOutlined />}
-              size="large"
-              onClick={() => void load()}
-              loading={loading}
-            />
-          </div>
-        </div>
-        {error && (
-          <Alert
-            type="error"
-            message={error}
-            showIcon
-            action={<Button onClick={() => void load()}>重试</Button>}
-          />
-        )}
-        <div className="project-hub-list-title">
-          <span>
-            {status === "archived"
-              ? "项目归档"
-              : status === "all"
-                ? "全部项目"
-                : "项目列表"}
-          </span>
-          <small>{visible.length} 个项目 · 按创建时间排序</small>
-        </div>
-        <div className="project-hub-list" aria-busy={loading}>
-          {loading ? (
-            <div className="project-hub-loading">
-              <Skeleton active paragraph={{ rows: 5 }} />
+      {open && (
+        <section className="project-hub project-hub-page">
+          <header className="project-hub-header">
+            <div>
+              <span className="project-hub-eyebrow">售前工作空间</span>
+              <h1>评估项目</h1>
+              <p>从招标清单到评估交付，持续跟进每一个项目。</p>
             </div>
-          ) : visible.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={
-                query
-                  ? "没有找到匹配的项目"
-                  : status === "archived"
-                    ? "暂无归档项目"
-                    : "还没有可访问的项目"
-              }
-            >
+            <Space>
               <Button
-                onClick={() => {
-                  if (query) {
-                    setQuery("");
-                  } else {
-                    onCreate();
-                  }
-                }}
+                type="primary"
+                size="large"
+                icon={<PlusOutlined />}
+                onClick={onCreate}
               >
-                {query ? "清除搜索" : "新建评估项目"}
+                新建项目
               </Button>
-            </Empty>
-          ) : (
-            visible
-              .slice(
-                (Math.min(page, Math.max(1, Math.ceil(visible.length / 8))) -
-                  1) *
-                  8,
-                Math.min(page, Math.max(1, Math.ceil(visible.length / 8))) * 8,
-              )
-              .map((p) => {
-                const manage = user.role === "admin" || p.owner_id === user.id;
-                return (
-                  <article
-                    className={`project-hub-item ${p.archived_at ? "is-archived" : ""}`}
-                    key={p.id}
-                  >
-                    <div className="project-hub-icon">
-                      <FolderOpenOutlined />
-                    </div>
-                    <div className="project-hub-summary">
-                      <div className="project-hub-title">
-                        <button onClick={() => onOpen(p.id)}>{p.name}</button>
-                        <Tag
-                          color={
-                            p.active_run
-                              ? "processing"
+              <Button size="large" onClick={onClose}>
+                返回工作台
+              </Button>
+            </Space>
+          </header>
+          <div className="project-hub-controls">
+            <Segmented
+              aria-label="项目状态"
+              value={status}
+              onChange={setStatus}
+              options={[
+                {
+                  value: "active",
+                  label: `未归档 · ${rows.filter((p) => !p.archived_at).length}`,
+                },
+                {
+                  value: "archived",
+                  label: `已归档 · ${rows.filter((p) => p.archived_at).length}`,
+                },
+                { value: "all", label: "全部" },
+              ]}
+            />
+            <div className="project-hub-search">
+              <Input
+                prefix={<SearchOutlined />}
+                aria-label="搜索项目"
+                placeholder="搜索项目、背景或负责人"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                allowClear
+                size="large"
+              />
+              <Select
+                aria-label="项目范围"
+                value={scope}
+                onChange={setScope}
+                options={[
+                  { value: "all", label: "全部可访问" },
+                  { value: "mine", label: "我负责的" },
+                ]}
+                size="large"
+              />
+              <Button
+                aria-label="刷新项目"
+                icon={<ReloadOutlined />}
+                size="large"
+                onClick={() => void load()}
+                loading={loading}
+              />
+            </div>
+          </div>
+          {error && (
+            <Alert
+              type="error"
+              message={error}
+              showIcon
+              action={<Button onClick={() => void load()}>重试</Button>}
+            />
+          )}
+          <div className="project-hub-list-title">
+            <span>
+              {status === "archived"
+                ? "项目归档"
+                : status === "all"
+                  ? "全部项目"
+                  : "项目列表"}
+            </span>
+            <small>{visible.length} 个项目 · 按创建时间排序</small>
+          </div>
+          <div className="project-hub-list" aria-busy={loading}>
+            {loading ? (
+              <div className="project-hub-loading">
+                <Skeleton active paragraph={{ rows: 5 }} />
+              </div>
+            ) : visible.length === 0 ? (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={
+                  query
+                    ? "没有找到匹配的项目"
+                    : status === "archived"
+                      ? "暂无归档项目"
+                      : "还没有可访问的项目"
+                }
+              >
+                <Button
+                  onClick={() => {
+                    if (query) {
+                      setQuery("");
+                    } else {
+                      onCreate();
+                    }
+                  }}
+                >
+                  {query ? "清除搜索" : "新建评估项目"}
+                </Button>
+              </Empty>
+            ) : (
+              visible
+                .slice(
+                  (Math.min(page, Math.max(1, Math.ceil(visible.length / 8))) -
+                    1) *
+                    8,
+                  Math.min(page, Math.max(1, Math.ceil(visible.length / 8))) *
+                    8,
+                )
+                .map((p) => {
+                  const manage =
+                    user.role === "admin" || p.owner_id === user.id;
+                  return (
+                    <article
+                      className={`project-hub-item ${p.archived_at ? "is-archived" : ""}`}
+                      key={p.id}
+                    >
+                      <div className="project-hub-icon">
+                        <FolderOpenOutlined />
+                      </div>
+                      <div className="project-hub-summary">
+                        <div className="project-hub-title">
+                          <button onClick={() => onOpen(p.id)}>{p.name}</button>
+                          <Tag
+                            color={
+                              p.active_run
+                                ? "processing"
+                                : p.archived_at
+                                  ? "default"
+                                  : "green"
+                            }
+                          >
+                            {p.active_run
+                              ? "执行中"
                               : p.archived_at
-                                ? "default"
-                                : "green"
-                          }
+                                ? "已归档"
+                                : "可继续评估"}
+                          </Tag>
+                        </div>
+                        <p className="project-hub-description">
+                          {p.description ||
+                            "尚未填写项目背景，可在编辑中补充业务场景与评估目标。"}
+                        </p>
+                        <div className="project-hub-meta">
+                          <span className="project-owner-avatar">
+                            {(p.owner_name || "成员").slice(0, 1)}
+                          </span>
+                          <span>{p.owner_name || "项目负责人"}</span>
+                          <i />
+                          <span>
+                            创建于{" "}
+                            {new Date(p.created_at).toLocaleDateString("zh-CN")}
+                          </span>
+                          {p.archived_at && (
+                            <>
+                              <i />
+                              <span>
+                                已归档{" "}
+                                {new Date(p.archived_at).toLocaleDateString(
+                                  "zh-CN",
+                                )}
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <div className="project-hub-actions">
+                        <Button
+                          icon={<ArrowRightOutlined />}
+                          iconPosition="end"
+                          onClick={() => onOpen(p.id)}
                         >
-                          {p.active_run
-                            ? "执行中"
-                            : p.archived_at
-                              ? "已归档"
-                              : "可继续评估"}
-                        </Tag>
-                      </div>
-                      <p className="project-hub-description">
-                        {p.description ||
-                          "尚未填写项目背景，可在编辑中补充业务场景与评估目标。"}
-                      </p>
-                      <div className="project-hub-meta">
-                        <span className="project-owner-avatar">
-                          {(p.owner_name || "成员").slice(0, 1)}
-                        </span>
-                        <span>{p.owner_name || "项目负责人"}</span>
-                        <i />
-                        <span>
-                          创建于{" "}
-                          {new Date(p.created_at).toLocaleDateString("zh-CN")}
-                        </span>
-                        {p.archived_at && (
-                          <>
-                            <i />
-                            <span>
-                              已归档{" "}
-                              {new Date(p.archived_at).toLocaleDateString(
-                                "zh-CN",
-                              )}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                    <div className="project-hub-actions">
-                      <Button
-                        icon={<ArrowRightOutlined />}
-                        iconPosition="end"
-                        onClick={() => onOpen(p.id)}
-                      >
-                        {p.archived_at ? "查看成果" : "进入项目"}
-                      </Button>
-                      {manage && (
-                        <Dropdown
-                          trigger={["click"]}
-                          menu={{
-                            items: [
-                              {
-                                key: "edit",
-                                label: "编辑项目信息",
-                                disabled:
-                                  p.active_run || !!p.archived_at || busy,
-                              },
-                              {
-                                key: "archive",
-                                label: p.archived_at ? "恢复项目" : "归档项目",
-                                disabled: p.active_run || busy,
-                              },
-                              { type: "divider" },
-                              {
-                                key: "delete",
-                                label: "永久删除项目",
-                                danger: true,
-                                disabled: p.active_run || busy,
-                              },
-                            ],
-                            onClick: ({ key }) => {
-                              if (key === "edit") {
-                                form.setFieldsValue(p);
-                                setEditing(p);
-                              } else if (key === "delete") {
-                                setDeleting(p);
-                                setConfirm("");
-                              } else {
-                                modal.confirm({
-                                  title: p.archived_at
+                          {p.archived_at ? "查看成果" : "进入项目"}
+                        </Button>
+                        {manage && (
+                          <Dropdown
+                            trigger={["click"]}
+                            menu={{
+                              items: [
+                                {
+                                  key: "edit",
+                                  label: "编辑项目信息",
+                                  disabled:
+                                    p.active_run || !!p.archived_at || busy,
+                                },
+                                {
+                                  key: "archive",
+                                  label: p.archived_at
                                     ? "恢复项目"
                                     : "归档项目",
-                                  content: p.archived_at
-                                    ? `恢复「${p.name}」后可继续评估。`
-                                    : `归档「${p.name}」后保留历史结果，并停止接受新操作。`,
-                                  okText: p.archived_at ? "恢复" : "归档",
-                                  cancelText: "取消",
-                                  onOk: () =>
-                                    change(() =>
-                                      post(
-                                        `/projects/${p.id}/${p.archived_at ? "restore" : "archive"}`,
+                                  disabled: p.active_run || busy,
+                                },
+                                { type: "divider" },
+                                {
+                                  key: "delete",
+                                  label: "永久删除项目",
+                                  danger: true,
+                                  disabled: p.active_run || busy,
+                                },
+                              ],
+                              onClick: ({ key }) => {
+                                if (key === "edit") {
+                                  form.setFieldsValue(p);
+                                  setEditing(p);
+                                } else if (key === "delete") {
+                                  setDeleting(p);
+                                  setConfirm("");
+                                } else {
+                                  modal.confirm({
+                                    title: p.archived_at
+                                      ? "恢复项目"
+                                      : "归档项目",
+                                    content: p.archived_at
+                                      ? `恢复「${p.name}」后可继续评估。`
+                                      : `归档「${p.name}」后保留历史结果，并停止接受新操作。`,
+                                    okText: p.archived_at ? "恢复" : "归档",
+                                    cancelText: "取消",
+                                    onOk: () =>
+                                      change(() =>
+                                        post(
+                                          `/projects/${p.id}/${p.archived_at ? "restore" : "archive"}`,
+                                        ),
                                       ),
-                                    ),
-                                });
-                              }
-                            },
-                          }}
-                        >
-                          <Button
-                            aria-label={`管理项目 ${p.name}`}
-                            icon={<MoreOutlined />}
-                          />
-                        </Dropdown>
-                      )}
-                    </div>
-                  </article>
-                );
-              })
-          )}
-        </div>
-        <footer className="project-hub-footer">
-          <span>归档保留全部数据，恢复后可继续协作。</span>
-          <Pagination
-            current={Math.min(page, Math.max(1, Math.ceil(visible.length / 8)))}
-            total={visible.length}
-            pageSize={8}
-            onChange={setPage}
-            showSizeChanger={false}
-            hideOnSinglePage
-          />
-        </footer>
-      </Drawer>
+                                  });
+                                }
+                              },
+                            }}
+                          >
+                            <Button
+                              aria-label={`管理项目 ${p.name}`}
+                              icon={<MoreOutlined />}
+                            />
+                          </Dropdown>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })
+            )}
+          </div>
+          <footer className="project-hub-footer">
+            <span>归档保留全部数据，恢复后可继续协作。</span>
+            <Pagination
+              current={Math.min(
+                page,
+                Math.max(1, Math.ceil(visible.length / 8)),
+              )}
+              total={visible.length}
+              pageSize={8}
+              onChange={setPage}
+              showSizeChanger={false}
+              hideOnSinglePage
+            />
+          </footer>
+        </section>
+      )}
       <Modal
         title="编辑项目"
         open={!!editing}

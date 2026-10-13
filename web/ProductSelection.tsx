@@ -11,6 +11,8 @@ import {
 } from "antd";
 import type { ProductScope } from "../shared/domain";
 import { api } from "./api";
+import { KnowledgeMarkdown } from "./KnowledgeReader";
+import { AppstoreOutlined } from "@ant-design/icons";
 const key = (p: { name: string; version: string }) =>
   JSON.stringify([p.name, p.version]);
 export function ProductSelection({
@@ -29,6 +31,7 @@ export function ProductSelection({
   onSend: (text: string) => Promise<void>;
 }) {
   const [form] = Form.useForm();
+  const selectedProducts: string[] = Form.useWatch("choices", form) ?? [];
   const [busy, setBusy] = useState(false);
   const { message } = AntApp.useApp();
   useEffect(() => {
@@ -134,37 +137,57 @@ export function ProductSelection({
         style={{ marginTop: 20 }}
       >
         <Form.Item name="choices" label="推荐候选产品">
-          <Checkbox.Group style={{ display: "grid", gap: 16, width: "100%" }}>
+          <Checkbox.Group className="recommended-product-grid">
             {scope.recommendations.map((p) => (
-              <div
+              <article
                 key={key(p)}
-                style={{
-                  border: "1px solid #dce4df",
-                  borderRadius: 8,
-                  padding: 16,
-                }}
+                className={`recommended-product-card ${selectedProducts.includes(key(p)) ? "selected" : ""}`}
               >
-                <Checkbox value={key(p)}>
-                  <b>{p.name}</b> {p.version && <Tag>{p.version}</Tag>}
-                </Checkbox>
-                <p>{p.reason}</p>
-                <p>
-                  <b>覆盖方向：</b>
-                  {p.coverage}
-                </p>
-                {p.gaps && (
-                  <p>
-                    <b>待核实 / 缺口：</b>
-                    {p.gaps}
-                  </p>
-                )}
-                {p.path && <p className="muted">产品页：{p.path}</p>}
-                {p.evidence.map((e, i) => (
-                  <p className="muted" key={i}>
-                    总览证据 L{e.lineStart}–L{e.lineEnd}：{e.quote}
-                  </p>
-                ))}
-              </div>
+                <div className="product-card-heading">
+                  <span className="product-card-icon">
+                    <AppstoreOutlined />
+                  </span>
+                  <div>
+                    <h4>{p.name}</h4>
+                    {p.version && <Tag>{p.version}</Tag>}
+                  </div>
+                  <Checkbox
+                    value={key(p)}
+                    aria-label={`选择 ${p.name} ${p.version}`}
+                  />
+                </div>
+                <p className="product-card-summary">{p.reason}</p>
+                <div className="product-card-meta">
+                  <span>{p.evidence.length} 条推荐证据</span>
+                  {p.gaps && (
+                    <span className="product-gap-label">有待核实项</span>
+                  )}
+                </div>
+                <details className="product-card-details">
+                  <summary>查看推荐理由与覆盖情况</summary>
+                  <div className="knowledge-markdown">
+                    <h5>推荐理由</h5>
+                    <KnowledgeMarkdown text={p.reason} />
+                    <h5>覆盖方向</h5>
+                    <KnowledgeMarkdown text={p.coverage} />
+                    {p.gaps && (
+                      <>
+                        <h5>待核实 / 缺口</h5>
+                        <KnowledgeMarkdown text={p.gaps} />
+                      </>
+                    )}
+                    {p.path && <p className="muted">产品页：{p.path}</p>}
+                    {p.evidence.map((e, i) => (
+                      <section className="product-card-evidence" key={i}>
+                        <b>
+                          总览证据 L{e.lineStart}–L{e.lineEnd}
+                        </b>
+                        <KnowledgeMarkdown text={e.quote} />
+                      </section>
+                    ))}
+                  </div>
+                </details>
+              </article>
             ))}
           </Checkbox.Group>
         </Form.Item>

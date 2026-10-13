@@ -200,7 +200,7 @@ export async function createReport(
   let buffer: Buffer;
   if (format === "xlsx") {
     const book = new ExcelJS.Workbook();
-    book.creator = "标研";
+    book.creator = "评标AI";
     book.created = new Date();
     if (kind === "full") addOverview(book, snapshot, sales.length);
     const sheet = book.addWorksheet("功能点匹配报告", {

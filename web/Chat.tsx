@@ -217,11 +217,31 @@ export function Chat({
             <span className="welcome-icon">
               <FileSearchOutlined />
             </span>
-            <h2>从一份清单，开始有据可查的评估。</h2>
+            <h2>开始项目评估</h2>
             <p>
-              上传招标文件，告诉 Agent
-              你的目标。它会制定计划、阅读条款、检索销售项，并保留判断依据。
+              上传一份招标清单，Agent
+              会提取条款并检索产品证据。关键判断由你确认。
             </p>
+            {!hasDocuments && (
+              <ol className="empty-project-guide">
+                <li>
+                  <b>上传文件</b>
+                  <span>提供招标清单或技术需求</span>
+                </li>
+                <li>
+                  <b>AI 评估</b>
+                  <span>提取条款，制定检索计划</span>
+                </li>
+                <li>
+                  <b>确认与选型</b>
+                  <span>核对原文，选择产品范围</span>
+                </li>
+                <li>
+                  <b>复核与分享</b>
+                  <span>确认结论，交付报告与清单</span>
+                </li>
+              </ol>
+            )}
             <div className="suggestions">
               <button
                 onClick={() =>
@@ -262,9 +282,9 @@ export function Chat({
             <article className={`chat-message ${item.role}`} key={item.id}>
               <div className="message-meta">
                 <span className={`message-avatar ${item.role}`}>
-                  {item.role === "user" ? "你" : "研"}
+                  {item.role === "user" ? "你" : "AI"}
                 </span>
-                <b>{item.role === "user" ? "你" : "标研 Agent"}</b>
+                <b>{item.role === "user" ? "你" : "评标AI Agent"}</b>
                 <time>
                   {new Date(item.created_at).toLocaleTimeString("zh-CN", {
                     hour: "2-digit",
@@ -320,8 +340,8 @@ export function Chat({
         {streaming && (
           <article className="chat-message assistant">
             <div className="message-meta">
-              <span className="message-avatar">研</span>
-              <b>标研 Agent</b>
+              <span className="message-avatar">AI</span>
+              <b>评标AI Agent</b>
               <span className="muted">正在回复</span>
             </div>
             <div className="message-content">

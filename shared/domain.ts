@@ -136,6 +136,7 @@ export interface Assessment extends AssessmentInput {
   module?: string;
 }
 export interface Snapshot {
+  title?: string | null;
   id: string;
   path: string;
   content: string;

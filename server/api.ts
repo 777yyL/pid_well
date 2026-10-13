@@ -294,7 +294,7 @@ export function routes(
         [id],
       ),
       db.query(
-        "SELECT id,path,'' AS content,hash,created_at FROM snapshots WHERE project_id=$1 ORDER BY created_at",
+        "SELECT id,path,substring(content from '(?m)^#[[:space:]]+([^[:cntrl:]]+)') AS title,'' AS content,hash,created_at FROM snapshots WHERE project_id=$1 ORDER BY created_at",
         [id],
       ),
       db.query(

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Alert, Button, Form, Input, Typography, Segmented } from "antd";
-import { ArrowRightOutlined, FileSearchOutlined } from "@ant-design/icons";
+import { ArrowRightOutlined, CompassOutlined } from "@ant-design/icons";
 import { post } from "./api";
 export function Auth({
   setup,
@@ -34,9 +34,9 @@ export function Auth({
       <section className="auth-story">
         <div className="brand">
           <span className="brand-icon">
-            <FileSearchOutlined />
+            <CompassOutlined />
           </span>
-          <b>标研</b>
+          <b>评标AI</b>
           <span>售前 Agent 工作台</span>
         </div>
         <div>
