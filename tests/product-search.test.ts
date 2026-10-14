@@ -9,6 +9,8 @@ import {
   searchGlobalFallback,
   recordAlternative,
   linkedWikiPaths,
+  resolveProductPage,
+  validateCatalogSale,
 } from "../server/product-search.js";
 import {
   enforceProductScope,
@@ -16,6 +18,113 @@ import {
   productScope,
 } from "../server/product-scope.js";
 import type { AssessmentInput } from "../shared/domain.js";
+
+test("空路径使用产品标识定位，并通过指定版本目录校验销售项", async () => {
+  const db = await openDatabase("", "memory://");
+  await migrate(db);
+  const uid = randomUUID(),
+    pid = randomUUID();
+  const cid = randomUUID(),
+    rid = randomUUID();
+  const originalRead = WikiClient.prototype.read;
+  try {
+    await db.query(
+      "INSERT INTO users(id,username,display_name,password_hash,role) VALUES($1,'resolve_test','测试','hash','admin')",
+      [uid],
+    );
+    await db.query(
+      "INSERT INTO projects(id,name,wiki_project_id,owner_id) VALUES($1,'测试','wiki',$2)",
+      [pid, uid],
+    );
+    await db.query(
+      "INSERT INTO conversations(id,project_id,title) VALUES($1,$2,'测试')",
+      [cid, pid],
+    );
+    await db.query(
+      "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status) VALUES($1,$2,$3,$4,'测试',$5,'completed')",
+      [rid, cid, pid, uid, randomUUID()],
+    );
+    const path = "wiki/entities/products/infovision-ieducation-safety.md";
+    const versionPath =
+      "wiki/entities/versions/infovision-ieducation-safety-v1.5.100.md";
+    const salePath = "wiki/entities/sale-items/safety.md";
+    await snapshotPage(
+      db,
+      pid,
+      path,
+      "# 校园安全平台\n- 产品标识: Infovision iEducation-Safety\n[版本](../versions/infovision-ieducation-safety-v1.5.100.md)",
+    );
+    await snapshotPage(
+      db,
+      pid,
+      versionPath,
+      "---\nversion: v1.5.100\n---\n[销售项](../sale-items/safety.md)",
+    );
+    const sale = await snapshotPage(
+      db,
+      pid,
+      salePath,
+      "---\ntitle: 校园安全\nproduct: Infovision iEducation-Safety\nversion: v1.5.100\nmodule_id: SAFETY\n---",
+    );
+    const choice = {
+      name: "Infovision iEducation-Safety",
+      version: "v1.5.100",
+      path: "",
+    };
+    assert.equal((await resolveProductPage(db, pid, choice))?.path, path);
+    await selectProducts(db, pid, uid, {
+      expectedRevision: 1,
+      selected: [choice],
+    });
+    const scope = await productScope(db, pid);
+    assert.equal(scope.selected[0].path, path);
+    await validateCatalogSale(db, pid, scope.selected[0], sale, "v1.5.100");
+    // Existing confirmed scopes with empty paths also recover without changing user choices.
+    await db.query(
+      "UPDATE product_scopes SET selected=$2 WHERE project_id=$1",
+      [pid, JSON.stringify([choice])],
+    );
+    await enforceProductScope(db, pid, {
+      product: choice.name,
+      version: choice.version,
+      sales: ["校园安全"],
+      evidence: [{ snapshotId: sale.id }],
+    } as AssessmentInput);
+    WikiClient.prototype.read = async (_wiki, pagePath) => {
+      const [page] = await db.query<{ content: string }>(
+        "SELECT content FROM snapshots WHERE project_id=$1 AND path=$2",
+        [pid, pagePath],
+      );
+      assert.ok(page, pagePath);
+      return page.content;
+    };
+    const catalog = await readCatalogPage(db, pid, rid, 0, 25);
+    assert.equal(catalog.complete, true);
+    assert.equal(catalog.items.length, 1);
+    assert.equal(catalog.products[0].path, path);
+    assert.equal(catalog.products[0].directoryPath, versionPath);
+    await assert.rejects(
+      validateCatalogSale(
+        db,
+        pid,
+        { ...scope.selected[0], version: "v9" },
+        sale,
+        "v1.5.100",
+      ),
+      /版本目录|版本/,
+    );
+    await snapshotPage(
+      db,
+      pid,
+      "wiki/entities/products/duplicate.md",
+      "# 其他标题\n- 产品标识: Infovision iEducation-Safety",
+    );
+    await assert.rejects(resolveProductPage(db, pid, choice), /多个产品档案/);
+  } finally {
+    WikiClient.prototype.read = originalRead;
+    await db.close();
+  }
+});
 
 test("产品目录路径：相对链接、wiki 链接、锚点和越界", () => {
   assert.deepEqual(

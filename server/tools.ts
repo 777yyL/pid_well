@@ -284,7 +284,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "wiki_product_catalog",
       "读取已选产品销售项目录",
-      "读取用户已选产品/版本的产品页及目录内销售项，分页直至 complete=true。禁止用全局搜索替代产品内目录检索。",
+      "读取用户已选产品档案，沿产品页链接定位所选版本目录，再读取该目录销售项，分页直至 complete=true。产品页位于 wiki/entities/products/，版本目录位于 wiki/entities/versions/，销售项位于 sale-items/ 或 sales/。已读取的产品档案可用于核实空路径，不要求用户手工补写已能唯一定位的路径。禁止用全局搜索替代产品内目录检索。",
       z.object({
         offset: z.number().int().min(0).default(0),
         count: z.number().int().min(1).max(50).default(25),

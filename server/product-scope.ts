@@ -2,7 +2,11 @@ import { z } from "zod";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
-import { validateCatalogSale, sameVersion } from "./product-search.js";
+import {
+  validateCatalogSale,
+  sameVersion,
+  resolveProductPage,
+} from "./product-search.js";
 import { overviewProduct } from "./product-overview.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import {
@@ -191,6 +195,12 @@ export async function selectProducts(
   input: unknown,
 ) {
   const value = selectionSchema.parse(input);
+  for (const selected of value.selected) {
+    if (!selected.path || selected.path.includes("/versions/")) {
+      const product = await resolveProductPage(db, projectId, selected);
+      if (product) selected.path = product.path;
+    }
+  }
   if (
     new Set(value.selected.map((c) => c.name + "@" + c.version)).size !==
     value.selected.length
@@ -290,16 +300,7 @@ export async function enforceProductScope(
       422,
       "评估的产品/版本不在用户确认范围内，请按已选产品匹配",
     );
-  const pages = await db.query<{ path: string; content: string }>(
-    "SELECT path,content FROM snapshots WHERE project_id=$1 AND kind=$2",
-    [projectId, "product"],
-  );
-  const root = pages.find((p) =>
-    selected.path
-      ? p.path === selected.path
-      : parseSaleEntity(p.content).title === selected.name ||
-        p.path.split("/").at(-1)?.replace(/\.md$/, "") === selected.name,
-  );
+  const root = await resolveProductPage(db, projectId, selected);
   if (!root)
     throw new AppError(
       422,

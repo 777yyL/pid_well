@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { z } from "zod";
+import { parse as parseYaml } from "yaml";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
@@ -26,6 +27,76 @@ export const sameVersion = (a: string, b: string) =>
   a.replace(/^v/i, "").trim() === b.replace(/^v/i, "").trim();
 const aliases = (p: Choice) =>
   [p.name, posix.basename(p.path, ".md")].filter(Boolean);
+const identity = (value: string) => value.toLowerCase().replace(/[\s_-]/g, "");
+export async function resolveProductPage(
+  db: Database,
+  projectId: string,
+  choice: Choice,
+) {
+  const pages = await db.query<Page>(
+    "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 AND kind='product' ORDER BY path,created_at DESC",
+    [projectId],
+  );
+  const matches = pages.filter((page) => {
+    if (choice.path && choice.path.includes("/products/"))
+      return page.path === choice.path;
+    const entity = parseSaleEntity(page.content);
+    const clean = page.content.replace(/\*\*|`/g, "");
+    const front = clean.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    const metadata = front ? (parseYaml(front[1]) ?? {}) : {};
+    const labelled = [...clean.matchAll(/产品标识\s*[:：|]\s*([^\n|·]+)/g)].map(
+      (m) => m[1].trim(),
+    );
+    return [
+      entity.title,
+      entity.product,
+      String(metadata.product_id ?? metadata.productId ?? ""),
+      posix.basename(page.path, ".md"),
+      ...labelled,
+    ].some((value) => value && identity(value) === identity(choice.name));
+  });
+  if (matches.length > 1)
+    throw new AppError(
+      422,
+      `产品「${choice.name}」存在多个产品档案，请选择准确产品页路径`,
+    );
+  return matches[0];
+}
+
+async function versionDirectory(
+  db: Database,
+  projectId: string,
+  choice: Choice,
+  product: Page,
+) {
+  const versionPaths = linkedWikiPaths(product.content, product.path).filter(
+    (p) => p.includes("/versions/"),
+  );
+  const pages = await db.query<Page>(
+    "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 ORDER BY path,created_at DESC",
+    [projectId],
+  );
+  const matches = pages.filter((p) => {
+    if (!versionPaths.includes(p.path)) return false;
+    const version = parseSaleEntity(p.content).version;
+    return (
+      !choice.version ||
+      (version
+        ? sameVersion(version, choice.version)
+        : identity(posix.basename(p.path, ".md")) ===
+          identity(
+            posix.basename(product.path, ".md") +
+              "-v" +
+              choice.version.replace(/^v/i, ""),
+          ))
+    );
+  });
+  if (matches.length > 1)
+    throw new AppError(422, "所选产品存在多个版本目录，请核实版本");
+  if (versionPaths.length && !matches.length)
+    throw new AppError(422, "请先读取产品页链接中的所选版本目录，再进行匹配");
+  return matches[0] ?? product;
+}
 export function linkedWikiPaths(content: string, root: string) {
   const links = [...content.matchAll(/\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]/g)].map(
     (m) => m[1],
@@ -109,23 +180,8 @@ export async function selectedCatalog(
   for (const selected of scope.selected) {
     signal?.throwIfAborted();
     let path = selected.path;
-    if (!path) {
-      const known = await db.query<Page>(
-        "SELECT id,path,content FROM snapshots WHERE project_id=$1 AND kind='product' ORDER BY created_at DESC",
-        [projectId],
-      );
-      path =
-        known.find(
-          (p) =>
-            parseSaleEntity(p.content).title === selected.name &&
-            (!selected.version ||
-              !parseSaleEntity(p.content).version ||
-              sameVersion(
-                selected.version,
-                parseSaleEntity(p.content).version,
-              )),
-        )?.path ?? "";
-    }
+    const knownProduct = await resolveProductPage(db, projectId, selected);
+    if (!path || path.includes("/versions/")) path = knownProduct?.path ?? "";
     if (!path)
       throw new AppError(
         422,
@@ -136,19 +192,36 @@ export async function selectedCatalog(
     const meta = parseSaleEntity(content);
     if (root.kind !== "product" || meta.moduleId)
       throw new AppError(422, "选定路径是销售项而非产品目录，请修正产品页路径");
+    const choice = { ...selected, path };
+    for (const versionPath of linkedWikiPaths(content, path).filter((p) =>
+      p.includes("/versions/"),
+    )) {
+      await snapshotPage(
+        db,
+        projectId,
+        versionPath,
+        await wiki.read(wikiId, versionPath),
+      );
+    }
+    const directory = await versionDirectory(db, projectId, choice, root);
+    const directoryVersion = parseSaleEntity(directory.content).version;
     if (
       selected.version &&
-      meta.version &&
-      !sameVersion(selected.version, meta.version)
+      directoryVersion &&
+      !sameVersion(selected.version, directoryVersion)
     )
       throw new AppError(422, `产品「${selected.name}」目录版本与选择不一致`);
-    const choice = { ...selected, path };
-    const paths = linkedWikiPaths(content, path).filter(
+    const paths = linkedWikiPaths(directory.content, directory.path).filter(
       (p) =>
+        (p.includes("/sale-items/") || p.includes("/sales/")) &&
         p !== PRODUCT_OVERVIEW_PATH &&
         !scope.selected.some((s) => s.path === p),
     );
-    products.push({ choice, root: { id: root.id, path: root.path }, paths });
+    products.push({
+      choice,
+      root: { id: directory.id, path: directory.path },
+      paths,
+    });
   }
   const result = { scopeRevision: scope.revision, products };
   await audit(db, projectId, null, runId, "product_catalog", result);
@@ -211,6 +284,7 @@ export async function readCatalogPage(
       version: p.choice.version,
       rootSnapshotId: p.root.id,
       path: p.choice.path,
+      directoryPath: p.root.path,
       catalogLinks: p.paths.length,
     })),
     items,
@@ -452,7 +526,12 @@ export async function validateCatalogSale(
     "SELECT id,path,content FROM snapshots WHERE project_id=$1 AND path=$2 ORDER BY created_at DESC LIMIT 1",
     [projectId, choice.path],
   );
-  const rootVersion = root ? parseSaleEntity(root.content).version : "";
+  const directory = root
+    ? await versionDirectory(db, projectId, choice, root)
+    : undefined;
+  const rootVersion = directory
+    ? parseSaleEntity(directory.content).version
+    : "";
   if (
     rootVersion &&
     choice.version &&
@@ -460,8 +539,8 @@ export async function validateCatalogSale(
   )
     throw new AppError(422, "产品目录版本与所选版本不一致");
   if (
-    !root ||
-    !linkedWikiPaths(root.content, root.path).includes(page.path) ||
+    !directory ||
+    !linkedWikiPaths(directory.content, directory.path).includes(page.path) ||
     !belongs(page, choice)
   )
     throw new AppError(
