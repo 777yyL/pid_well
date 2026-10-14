@@ -22,7 +22,7 @@ export async function productScope(
   const [recommendation] = await db.query<{
     data: { combinations?: ProductScope["combinations"] };
   }>(
-    "SELECT data FROM audit_log WHERE project_id=$1 AND action='products_recommended' ORDER BY id DESC LIMIT 1",
+    "SELECT data FROM audit_log WHERE project_id=$1 AND action IN ('products_recommended','product_plans_recommended') ORDER BY id DESC LIMIT 1",
     [projectId],
   );
   return row
@@ -36,18 +36,10 @@ export async function productScope(
         confirmed_by: null,
       };
 }
-export async function recommendProducts(
-  db: Database,
-  projectId: string,
-  input: unknown,
-  runId: string,
-  combinationInput: unknown = [],
+function validateProductPlans(
+  candidates: ProductScope["recommendations"],
+  combinations: NonNullable<ProductScope["combinations"]>,
 ) {
-  const candidates = productCandidateSchema.array().min(1).max(20).parse(input);
-  const combinations = productCombinationSchema
-    .array()
-    .max(5)
-    .parse(combinationInput);
   for (const combination of combinations) {
     const identities = combination.products.map((p) =>
       JSON.stringify([p.name, p.version]),
@@ -62,6 +54,50 @@ export async function recommendProducts(
     )
       throw new AppError(422, "推荐组合只能包含本次已提供证据的候选产品及版本");
   }
+}
+export async function recommendProductPlans(
+  db: Database,
+  projectId: string,
+  input: unknown,
+  runId: string,
+  expectedRevision: number,
+) {
+  const combinations = productCombinationSchema
+    .array()
+    .min(1)
+    .max(5)
+    .parse(input);
+  return db.transaction(async (tx) => {
+    await tx.query(
+      "SELECT project_id FROM product_scopes WHERE project_id=$1 FOR UPDATE",
+      [projectId],
+    );
+    const scope = await productScope(tx, projectId);
+    if (scope.revision !== expectedRevision)
+      throw new AppError(409, "产品推荐或范围已更新，请重新读取项目状态");
+    if (!scope.recommendations.length)
+      throw new AppError(409, "请先读取产品总览并生成候选产品");
+    validateProductPlans(scope.recommendations, combinations);
+    await audit(tx, projectId, null, runId, "product_plans_recommended", {
+      combinations,
+      scopeRevision: scope.revision,
+    });
+    return productScope(tx, projectId);
+  });
+}
+export async function recommendProducts(
+  db: Database,
+  projectId: string,
+  input: unknown,
+  runId: string,
+  combinationInput: unknown = [],
+) {
+  const candidates = productCandidateSchema.array().min(1).max(20).parse(input);
+  const combinations = productCombinationSchema
+    .array()
+    .max(5)
+    .parse(combinationInput);
+  validateProductPlans(candidates, combinations);
   if (
     new Set(candidates.map((c) => c.name + "@" + c.version)).size !==
     candidates.length
@@ -77,7 +113,19 @@ export async function recommendProducts(
         409,
         "用户已确定产品范围，不能覆盖选择；已有评估结果请新建项目比较其它策略",
       );
-    for (const candidate of candidates)
+    for (const candidate of candidates) {
+      const infoEvidence = candidate.evidence.map((e) => e.quote).join("\n");
+      for (const field of [
+        "productId",
+        "productLine",
+        "department",
+        "owner",
+      ] as const)
+        if (candidate[field] && !infoEvidence.includes(candidate[field]!))
+          throw new AppError(
+            422,
+            "产品基本信息必须有总览原文证据，不得推测标识、产品线、部门或负责人",
+          );
       for (const e of candidate.evidence) {
         const [p] = await tx.query<{ content: string }>(
           "SELECT content FROM snapshots WHERE id=$1 AND project_id=$2 AND kind=$3",
@@ -95,6 +143,7 @@ export async function recommendProducts(
         )
           throw new AppError(422, "产品推荐必须引用本项目知识库总览的准确证据");
       }
+    }
     await tx.query(
       "INSERT INTO product_scopes(project_id,recommendations) VALUES($1,$2) ON CONFLICT(project_id) DO UPDATE SET recommendations=EXCLUDED.recommendations,revision=product_scopes.revision+1,updated_at=now()",
       [projectId, JSON.stringify(candidates)],

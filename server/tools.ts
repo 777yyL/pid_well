@@ -20,7 +20,11 @@ import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { numberedLines } from "./documents.js";
 import { createReport } from "./reports.js";
 import { AppError } from "./errors.js";
-import { productScope, recommendProducts } from "./product-scope.js";
+import {
+  productScope,
+  recommendProducts,
+  recommendProductPlans,
+} from "./product-scope.js";
 import {
   readCatalogPage,
   searchSelected,
@@ -151,7 +155,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "recommend_products",
       "推荐候选产品",
-      "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
+      "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据。提取总览中的 productId 产品标识、productLine 产品线、department 产品部门、owner 负责人；每个有值的字段必须逐字出现在 evidence.quote 中，缺失则留空，name 填产品名称；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
       z.object({
         candidates: productCandidateSchema.array().min(1).max(20),
         combinations: productCombinationSchema.array().min(1).max(5),
@@ -163,6 +167,28 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           args.candidates,
           runId,
           args.combinations,
+        );
+        await ctx.emit("products_recommended", {
+          count: result.recommendations.length,
+        });
+        return result;
+      },
+    ),
+    tool(
+      "recommend_product_plans",
+      "生成推荐选型方案",
+      "针对已有候选推荐1–3套选型方案，解释建议选择哪些产品、各产品负责什么。只能引用现有候选名称及版本。保留候选基本信息、用户勾选及已确认产品范围；可用于补充旧推荐，不要再次 recommend_products 覆盖候选。先 project_context 获取 revision。",
+      z.object({
+        expectedRevision: z.number().int().positive(),
+        combinations: productCombinationSchema.array().min(1).max(5),
+      }),
+      async (args) => {
+        const result = await recommendProductPlans(
+          db,
+          projectId,
+          args.combinations,
+          runId,
+          args.expectedRevision,
         );
         await ctx.emit("products_recommended", {
           count: result.recommendations.length,

@@ -54,6 +54,10 @@ export const productChoiceSchema = z.object({
     ),
 });
 export const productCandidateSchema = productChoiceSchema.extend({
+  productId: z.string().trim().max(200).optional(),
+  productLine: z.string().trim().max(200).optional(),
+  department: z.string().trim().max(200).optional(),
+  owner: z.string().trim().max(200).optional(),
   reason: z.string().min(10).max(4000),
   coverage: z.string().min(1).max(2000),
   gaps: z.string().max(2000).default(""),

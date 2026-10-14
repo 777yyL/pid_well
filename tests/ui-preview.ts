@@ -35,6 +35,26 @@ await db.query(
     userId,
   ],
 );
+if (process.env.QA_PROJECTS === "true") {
+  for (const [index, name] of [
+    "园区综合安防评估",
+    "人员通行系统选型",
+    "智慧楼宇招标清单",
+    "历史交付方案",
+  ].entries()) {
+    await db.query(
+      "INSERT INTO projects(id,name,description,wiki_project_id,owner_id,archived_at,created_at) VALUES($1,$2,$3,'qa-only',$4,$5,now()-$6::int*interval '1 day')",
+      [
+        randomUUID(),
+        name,
+        "隔离界面验证数据：核对项目布局、筛选与管理操作",
+        userId,
+        index === 3 ? new Date().toISOString() : null,
+        index + 1,
+      ],
+    );
+  }
+}
 const { app } = await createApp(db, true);
 if (process.env.QA_REPORTS === "true") {
   await db.query(
@@ -149,6 +169,10 @@ if (process.env.QA_PRODUCTS === "true") {
   const candidates = [
     {
       name: "园区综合管理平台",
+      productId: "PARK-IOC",
+      productLine: "综合安防",
+      department: "平台产品部",
+      owner: "界面测试负责人",
       version: "v2.1",
       reason:
         "推荐优先评估园区综合平台，统一视频与门禁业务。多子系统协作场景下可减少重复建设，并保留事件联动能力，具体授权范围仍需核实。",
@@ -173,7 +197,10 @@ if (process.env.QA_PRODUCTS === "true") {
     [projectId, JSON.stringify(candidates)],
   );
 }
-if (process.env.QA_PRODUCTS === "true") {
+if (
+  process.env.QA_PRODUCTS === "true" &&
+  process.env.QA_OLD_RECOMMENDATION !== "true"
+) {
   await db.query(
     "INSERT INTO audit_log(project_id,action,data) VALUES($1,'products_recommended',$2)",
     [
@@ -250,11 +277,73 @@ if (process.env.QA_ALTERNATIVES === "true") {
     ],
   );
 }
+let qaActivityTimer: ReturnType<typeof setInterval> | undefined;
+if (process.env.QA_ACTIVITY === "true") {
+  const conversation = randomUUID(),
+    run = randomUUID(),
+    document = randomUUID();
+  const title = "隔离验证：读取阶段模拟，不调用模型";
+  await db.query(
+    "INSERT INTO conversations(id,project_id,title) VALUES($1,$2,$3)",
+    [conversation, projectId, title],
+  );
+  await db.query(
+    "INSERT INTO documents(id,project_id,name,storage_name,hash,status,lines) VALUES($1,$2,'隔离验证清单.txt','qa-activity','qa-activity','ready',$3)",
+    [
+      document,
+      projectId,
+      JSON.stringify(
+        Array.from({ length: 360 }, (_, i) => `界面测试原文 ${i + 1}`),
+      ),
+    ],
+  );
+  await db.query(
+    "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status,created_at) VALUES($1,$2,$3,$4,$5,$6,'running',now()-interval '5 minutes')",
+    [run, conversation, projectId, userId, title, randomUUID()],
+  );
+  await db.query(
+    "INSERT INTO messages(id,conversation_id,run_id,role,content) VALUES($1,$2,$3,'user',$4)",
+    [randomUUID(), conversation, run, title],
+  );
+  await db.query(
+    "INSERT INTO run_events(run_id,type,payload,created_at) VALUES($1,'tool_execution_start',$2,now()-interval '80 seconds')",
+    [
+      run,
+      JSON.stringify({
+        toolCallId: "qa-reading",
+        toolName: "read_document",
+        args: { documentId: document, start: 145, count: 150 },
+      }),
+    ],
+  );
+  const phaseSince = Date.now() - 80000;
+  const heartbeat = async () =>
+    db.query(
+      "INSERT INTO run_events(run_id,type,payload) VALUES($1,'run_progress',$2)",
+      [
+        run,
+        JSON.stringify({
+          phase: "执行工具：read_document",
+          phaseSince,
+          readLines: 144,
+          totalLines: 360,
+          requirements: 0,
+          confirmed: 0,
+          assessments: 0,
+          reviewed: 0,
+          turns: 2,
+        }),
+      ],
+    );
+  await heartbeat();
+  qaActivityTimer = setInterval(() => void heartbeat().catch(() => {}), 5000);
+}
 await app.listen({
   host: process.env.QA_HOST ?? "127.0.0.1",
   port: Number(process.env.QA_PORT ?? 4321),
 });
 async function close() {
+  if (qaActivityTimer) clearInterval(qaActivityTimer);
   await app.close();
   await db.close();
   process.exit(0);

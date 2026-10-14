@@ -16,6 +16,38 @@ import { KnowledgeMarkdown } from "./KnowledgeReader";
 import { AppstoreOutlined } from "@ant-design/icons";
 const key = (p: { name: string; version: string }) =>
   JSON.stringify([p.name, p.version]);
+function ProductBasics({
+  product,
+  compact = false,
+}: {
+  product: ProductScope["recommendations"][number];
+  compact?: boolean;
+}) {
+  return (
+    <dl className={`product-basic-info ${compact ? "compact" : ""}`}>
+      {!compact && (
+        <div>
+          <dt>产品标识</dt>
+          <dd className="product-identifier">
+            {product.productId || "未提供"}
+          </dd>
+        </div>
+      )}
+      <div>
+        <dt>产品线</dt>
+        <dd>{product.productLine || "未提供"}</dd>
+      </div>
+      <div>
+        <dt>产品部门</dt>
+        <dd>{product.department || "未提供"}</dd>
+      </div>
+      <div>
+        <dt>负责人</dt>
+        <dd>{product.owner || "未提供"}</dd>
+      </div>
+    </dl>
+  );
+}
 export function ProductSelection({
   projectId,
   scope,
@@ -63,6 +95,18 @@ export function ProductSelection({
           : scope.strategy,
     });
   }, [projectId, scope.revision, form]);
+  async function generatePlans() {
+    setBusy(true);
+    try {
+      await onSend(
+        "请 project_context 读取现有候选产品、策略和 revision，必要时 wiki_overview 读取总览核实。使用 recommend_product_plans 生成1–3套选型建议，明确每套建议选哪些产品、各产品分工和方案理由。互为替代的产品分别给方案，不要默认把所有候选组合。保留已有候选、基本信息及已确认范围，不要再次 recommend_products。完成后等待用户采用方案。",
+      );
+    } catch (e) {
+      if (e instanceof Error) message.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function addAlternative(p: ProductAlternative["data"]["product"]) {
     setBusy(true);
     try {
@@ -134,7 +178,7 @@ export function ProductSelection({
           onClick={() => {
             setBusy(true);
             void onSend(
-              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据，并通过 combinations 给出1–3套推荐组成，每套明确产品及版本、各产品分工与简洁组合理由。互为替代的产品不要默认组合。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
+              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据，从总览逐字提取 productId 产品标识、productLine 产品线、department 产品部门、owner 负责人，缺失则留空，基本信息需要 evidence.quote 逐字引用；并通过 combinations 给出1–3套推荐组成，每套明确产品及版本、各产品分工与简洁组合理由。互为替代的产品不要默认组合。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
             )
               .catch(() => {})
               .finally(() => setBusy(false));
@@ -211,6 +255,7 @@ export function ProductSelection({
                 <Tag>{detail.version || "版本待核实"}</Tag>
               </div>
             </div>
+            <ProductBasics product={detail} />
             <div className="recommendation-facts">
               <section>
                 <h4>覆盖能力</h4>
@@ -255,9 +300,12 @@ export function ProductSelection({
       {!!scope.recommendations.length && (
         <section className="recommendation-compositions">
           <div className="composition-heading">
-            <h4>AI 推荐组成</h4>
-            <span>先选方案，再核实销售项</span>
+            <h4>推荐选型方案</h4>
+            <span>AI 建议如何选择产品</span>
           </div>
+          <p className="selection-plan-explainer">
+            一套方案就是建议选择的产品集合：单个产品可独立覆盖需求，多产品则分工配合。采用方案会勾选对应产品，确认后才开始匹配。
+          </p>
           {combinations.length ? (
             combinations.map((c, i) => {
               const chosen =
@@ -281,7 +329,7 @@ export function ProductSelection({
                       disabled={!canChoose}
                       onClick={() => chooseProducts(c.products)}
                     >
-                      {chosen ? "已选中" : "一键选中"}
+                      {chosen ? "已勾选" : "采用这套方案"}
                     </Button>
                   </div>
                   <p className="composition-summary">{c.summary}</p>
@@ -303,22 +351,21 @@ export function ProductSelection({
               );
             })
           ) : (
-            <div className="composition-empty">
-              <p>
-                这份推荐尚未提供组合方案。可逐个选择产品，或让 AI
-                补充产品组成与分工。
-              </p>
+            <div className="selection-plan-empty">
+              <div>
+                <b>让 AI 帮你决定选哪些产品</b>
+                <p>
+                  当前已有 {scope.recommendations.length}{" "}
+                  个候选，尚未生成选型建议。点击右侧按钮，AI
+                  会比较现有候选并给出建议，不会改变你的产品范围。
+                </p>
+              </div>
               <Button
-                disabled={
-                  active || locked || busy || scope.status !== "pending"
-                }
-                onClick={() =>
-                  void onSend(
-                    "请读取当前项目选型和原总览证据，使用 recommend_products 重新保存候选并补充 combinations 推荐方案，明确各产品版本和分工；互为替代的产品分成不同方案。等待用户确认。",
-                  ).catch(() => {})
-                }
+                loading={busy}
+                disabled={active || busy || scope.status === "legacy"}
+                onClick={() => void generatePlans()}
               >
-                补充推荐组成
+                生成选型建议
               </Button>
             </div>
           )}
@@ -405,14 +452,23 @@ export function ProductSelection({
                   </span>
                   <div>
                     <h4>{p.name}</h4>
-                    {p.version && <Tag>{p.version}</Tag>}
+                    <div className="product-card-identity">
+                      <code>{p.productId || "标识未提供"}</code>
+                      {p.version && <Tag>{p.version}</Tag>}
+                    </div>
                   </div>
                   <Checkbox
                     value={key(p)}
                     aria-label={`选择 ${p.name} ${p.version}`}
                   />
                 </div>
-                <p className="product-card-summary">{p.reason}</p>
+                <ProductBasics product={p} compact />
+                <div className="product-card-coverage">
+                  <b>推荐覆盖方向</b>
+                  <p className="product-card-summary">
+                    {p.coverage.replace(/^[\s]*[-*]\s+/gm, "")}
+                  </p>
+                </div>
                 <div className="product-card-meta">
                   <span>{p.evidence.length} 条推荐证据</span>
                   {p.gaps && (

@@ -12,6 +12,7 @@ import {
 } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { activityCopy } from "./activity-copy";
 import { malformedToolText } from "../shared/agent-protocol";
 import type {
   ChatMessage,
@@ -34,6 +35,7 @@ const names: Record<string, string> = {
   save_assessments: "保存匹配结果",
   get_assessments: "读取指定评估与版本",
   recommend_products: "推荐候选产品",
+  recommend_product_plans: "生成推荐选型方案",
   review_assessments: "逐条复核",
   record_finding: "记录阶段分析",
   export_report: "生成正式报告",
@@ -148,6 +150,20 @@ export function Chat({
         /执行工具：(\w+)/,
         (_, name: string) => names[name] ?? name,
       );
+  const phaseTimestamp = currentTool
+    ? new Date(currentTool.event.created_at).getTime()
+    : Number(progress?.payload.phaseSince ?? now);
+  const phaseSeconds = Number.isFinite(phaseTimestamp)
+    ? Math.max(0, Math.floor((now - phaseTimestamp) / 1000))
+    : 0;
+  const activity = activityCopy({
+    tool: currentTool ? String(currentTool.event.payload.toolName) : undefined,
+    phase,
+    waitingSeconds: phaseSeconds,
+    disconnected: !!connectionError,
+    stale: heartbeatAge > 20,
+    queued: activeRun?.status === "queued",
+  });
   async function submit(text = draft) {
     if (!text.trim() || activeRun || sending || archived) return;
     try {
@@ -377,26 +393,16 @@ export function Chat({
           >
             <div className="activity-title">
               <SyncOutlined spin={!connectionError && heartbeatAge <= 20} />
-              <b>
-                {connectionError
-                  ? "连接暂时中断，正在重新连接"
-                  : heartbeatAge > 20
-                    ? "执行状态更新延迟，正在核实"
-                    : activeRun.status === "queued"
-                      ? "任务排队中"
-                      : phase}
-              </b>
+              <b>{activity.title}</b>
               <span>
                 {Math.floor(elapsed / 60)}分{elapsed % 60}秒
               </span>
             </div>
-            <p>
-              {connectionError || heartbeatAge > 20
-                ? "页面暂时无法确认服务端状态。已保存的结果会保留，连接恢复后自动同步，请避免重复发起任务。"
-                : activeRun.status === "queued"
-                  ? "等待可用的执行名额，排队结束后自动开始。"
-                  : "任务仍在执行；下方为已保存的真实进度。模型等待期间也会持续同步状态。"}
-            </p>
+            <p>{activity.description}</p>
+            <div className="activity-current-step">
+              <span>当前动作</span>
+              <b>{phase}</b>
+            </div>
             {currentTool?.event.payload.toolName === "wiki_product_catalog" &&
               catalogProgress && (
                 <p className="muted">
@@ -407,33 +413,26 @@ export function Chat({
               )}
             {progress && (
               <div className="activity-counts">
-                <span>
+                <span className="activity-counter">
                   原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b> /{" "}
                   {Number(progress.payload.totalLines ?? 0)} 行
                 </span>
-                <span>
+                <span className="activity-counter">
                   条款 <b>{Number(progress.payload.requirements)}</b> · 已确认{" "}
                   <b>{Number(progress.payload.confirmed)}</b>
                 </span>
-                <span>
+                <span className="activity-counter">
                   评估 <b>{Number(progress.payload.assessments)}</b> · 已复核{" "}
                   <b>{Number(progress.payload.reviewed)}</b>
                 </span>
-                <span>
+                <span className="activity-counter">
                   执行 <b>{Number(progress.payload.turns)}</b> 轮
                 </span>
               </div>
             )}
             {progress && (
               <small>
-                最近同步 {heartbeatAge} 秒前 · 当前动作耗时{" "}
-                {Math.max(
-                  0,
-                  Math.floor(
-                    (now - Number(progress.payload.phaseSince)) / 1000,
-                  ),
-                )}{" "}
-                秒
+                最近同步 {heartbeatAge} 秒前 · 当前动作耗时 {phaseSeconds}秒
               </small>
             )}
             {retry && (
@@ -469,7 +468,7 @@ export function Chat({
         )}
         {!activeRun && latestRun?.status === "completed" && (
           <div className="turn-finished" role="status">
-            <CheckOutlined /> 本轮执行已结束
+            <CheckOutlined /> 这一轮先交卷，成果已保存
             {plan.some((step) => step.status !== "done")
               ? "，项目计划尚未全部完成。请根据 Agent 的说明确认条款、产品选型或继续对话。"
               : "。结果与执行记录已保存，可继续追问。"}

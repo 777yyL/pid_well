@@ -23,6 +23,7 @@ import { AgentRunner, repairTranscript } from "../server/agent.js";
 import { createTools } from "../server/tools.js";
 import {
   recommendProducts,
+  recommendProductPlans,
   productScope,
   enforceProductScope,
 } from "../server/product-scope.js";
@@ -237,7 +238,68 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         ),
         /重复包含/,
       );
-      recommendations.revision = withCompositions.revision;
+      const overviewWithInfo = await snapshotPage(
+        db,
+        projectId,
+        "wiki/overview.md",
+        "产品总览\n产品标识：VMS-TEST；产品名称：测试产品；产品线：视频管理；产品部门：平台部；负责人：测试负责人",
+      );
+      const enriched = {
+        ...recommendations.recommendations[0],
+        productId: "VMS-TEST",
+        productLine: "视频管理",
+        department: "平台部",
+        owner: "测试负责人",
+        evidence: [
+          {
+            snapshotId: overviewWithInfo.id,
+            lineStart: 2,
+            lineEnd: 2,
+            quote:
+              "产品标识：VMS-TEST；产品名称：测试产品；产品线：视频管理；产品部门：平台部；负责人：测试负责人",
+          },
+        ],
+      };
+      await assert.rejects(
+        recommendProducts(
+          db,
+          projectId,
+          [{ ...enriched, owner: "编造负责人" }],
+          fakeRun,
+          [composition],
+        ),
+        /基本信息.*证据/,
+      );
+      const detailed = await recommendProducts(
+        db,
+        projectId,
+        [enriched],
+        fakeRun,
+        [],
+      );
+      assert.equal(detailed.recommendations[0].productId, "VMS-TEST");
+      assert.equal(detailed.recommendations[0].department, "平台部");
+      const plansOnly = await recommendProductPlans(
+        db,
+        projectId,
+        [composition],
+        fakeRun,
+        detailed.revision,
+      );
+      assert.deepEqual(plansOnly.recommendations, detailed.recommendations);
+      assert.equal(plansOnly.revision, detailed.revision);
+      assert.deepEqual(plansOnly.combinations, [composition]);
+      await assert.rejects(
+        recommendProductPlans(
+          db,
+          projectId,
+          [composition],
+          fakeRun,
+          detailed.revision - 1,
+        ),
+        /已更新/,
+      );
+      recommendations.revision = detailed.revision;
       assert.equal(recommendations.status, "pending");
       const choose = {
         expectedRevision: recommendations.revision,
