@@ -11,6 +11,7 @@ import {
   linkedWikiPaths,
   resolveProductPage,
   validateCatalogSale,
+  productVersionList,
 } from "../server/product-search.js";
 import {
   enforceProductScope,
@@ -19,6 +20,53 @@ import {
 } from "../server/product-scope.js";
 import type { AssessmentInput } from "../shared/domain.js";
 import { parseSaleEntity } from "../server/sale-entity.js";
+test("公司版本页：产品回链与16个跨目录分册，版本表头不污染元数据", () => {
+  const product = "infovision-ieducation-safety";
+  const version = product + "-v1.5.100";
+  const categories = [
+    "ai",
+    "three-defense",
+    "base-pack",
+    "safety-education",
+    "safety-management",
+    "emergency-command",
+    "data-wall",
+    "data-cascade",
+    "smart-access",
+    "smart-reporting",
+    "intelligent-security",
+    "smart-retrieval",
+    "network-management",
+    "video-cascade",
+    "risk-prevention",
+    "misc",
+  ];
+  const page =
+    `---\ntype: entity\ntitle: InfovisioniEducation-Safety v1.5.100 版本快照\ntags: [version, infovision-ieducation-safety, 销售项]\nentity_type: version\nproduct: [[infovision-ieducation-safety]]\nversion: v1.5.100\nsale_items: 54\n---\n# InfovisioniEducation-Safety v1.5.100 版本快照\n> 产品 [[${product}]]\n| 业务分类 | 项数 | 分册索引页 |\n| --- | --- | --- |\n` +
+    categories.map((c) => `| ${c} | 1 | [[${version}-${c}]] |`).join("\n");
+  const productPath = `wiki/entities/products/${product}.md`;
+  const categoryPaths = categories.map(
+    (c) => `wiki/entities/sales/${version}-${c}.md`,
+  );
+  assert.equal(parseSaleEntity(page).version, "v1.5.100");
+  assert.equal(parseSaleEntity(page).product, product);
+  assert.deepEqual(
+    linkedWikiPaths(page, `wiki/entities/versions/${version}.md`, [
+      productPath,
+      ...categoryPaths,
+    ]),
+    [productPath, ...categoryPaths],
+  );
+  const productPage =
+    "---\ntype: entity\ntitle: InfovisioniEducation-Safety\ntags: [product, 教育安全督导]\nentity_type: product\n---\n# InfovisioniEducation-Safety\n| 版本 | 销售项数 | 版本快照 |\n| --- | --- | --- |\n| v1.5.100 | 54 | [[infovision-ieducation-safety-v1.5.100]] |";
+  assert.equal(parseSaleEntity(productPage).version, "");
+  assert.deepEqual(
+    linkedWikiPaths(productPage, productPath, [
+      `wiki/entities/versions/${version}.md`,
+    ]),
+    [`wiki/entities/versions/${version}.md`],
+  );
+});
 test("Wiki 文件树绝对路径规范化，拒绝越界路径", () => {
   assert.deepEqual(
     wikiFilePaths({
@@ -112,7 +160,7 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
       db,
       pid,
       path,
-      "# 校园安全平台\n- 产品标识: Infovision iEducation-Safety\n| 版本 | 销售项数 | 版本快照 |\n| --- | --- | --- |\n| v1.5.100 | 54 | [[infovision-ieducation-safety-v1.5.100]] |",
+      "# 校园安全平台\n- 产品标识: Infovision iEducation-Safety\n| 版本 | 销售项数 | 版本快照 |\n| --- | --- | --- |\n| v1.5.100 | 54 | [[infovision-ieducation-safety-v1.5.100]] |\n## 销售项清单\n### v1.5.100（54 项，16 分类）\n**AI分析**\n- [[safety|校园安全]]\n### v9.0.0（1 项）\n- [[deleted-other-version]]",
     );
     await snapshotPage(
       db,
@@ -122,12 +170,8 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
     );
     const volumePath = "wiki/entities/sales/safety-volume.md";
     await snapshotPage(db, pid, volumePath, "# 安全分册\n[[safety]]");
-    WikiClient.prototype.files = async () => [
-      path,
-      versionPath,
-      volumePath,
-      salePath,
-    ];
+    // The remote file index may lag behind successfully read pages.
+    WikiClient.prototype.files = async () => [path];
     const sale = await snapshotPage(
       db,
       pid,
@@ -159,6 +203,10 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
       evidence: [{ snapshotId: sale.id }],
     } as AssessmentInput);
     WikiClient.prototype.read = async (_wiki, pagePath) => {
+      assert.ok(
+        !pagePath.includes("/versions/") && !pagePath.includes("/sales/"),
+        "不得读取版本页或分类页",
+      );
       const [page] = await db.query<{ content: string }>(
         "SELECT content FROM snapshots WHERE project_id=$1 AND path=$2",
         [pid, pagePath],
@@ -170,7 +218,7 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
     assert.equal(catalog.complete, true);
     assert.equal(catalog.items.length, 1);
     assert.equal(catalog.products[0].path, path);
-    assert.equal(catalog.products[0].directoryPath, versionPath);
+    assert.equal(catalog.products[0].directoryPath, path);
     await assert.rejects(
       validateCatalogSale(
         db,
@@ -390,4 +438,14 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
     WikiClient.prototype.search = originalSearch;
     await db.close();
   }
+});
+
+test("仅提取产品页所选版本，已删除的版本入口与其他版本不参与解析", () => {
+  const content =
+    "## 版本与销售项\n[[deleted-version-page]]\n## 销售项清单\n### v1.5.100（54 项，16 分类）\n**AI分析**\n- [[sale-a|AI模型管理]]\n### v2.0.0（1 项）\n- [[sale-b]]";
+  assert.equal(
+    productVersionList(content, "v1.5.100"),
+    "**AI分析**\n- [[sale-a|AI模型管理]]",
+  );
+  assert.throws(() => productVersionList(content, "v3.0.0"), /缺少所选版本/);
 });
