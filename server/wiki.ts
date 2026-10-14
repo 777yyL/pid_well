@@ -4,6 +4,28 @@ import { AppError } from "./errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 export const PRODUCT_OVERVIEW_PATH = "wiki/overview.md";
+export function wikiFilePaths(result: unknown): string[] {
+  const paths = new Set<string>();
+  const visit = (value: unknown): void => {
+    if (typeof value === "string") {
+      const clean = value.replace(/\\/g, "/");
+      const start = clean.startsWith("wiki/")
+        ? 0
+        : clean.lastIndexOf("/wiki/") + 1;
+      if (start < 1 && !clean.startsWith("wiki/")) return;
+      const relative = clean.slice(start);
+      if (
+        relative.endsWith(".md") &&
+        !relative.split("/").some((p) => p === ".." || p === ".")
+      )
+        paths.add(relative);
+    } else if (Array.isArray(value)) value.forEach(visit);
+    else if (value && typeof value === "object")
+      Object.values(value).forEach(visit);
+  };
+  visit(result);
+  return [...paths];
+}
 export class WikiClient {
   constructor(
     private db: Database,
@@ -45,20 +67,9 @@ export class WikiClient {
     const result = await this.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/files?root=wiki&recursive=true&maxFiles=10000`,
     );
-    const paths = new Set<string>();
-    const visit = (value: unknown): void => {
-      if (
-        typeof value === "string" &&
-        value.startsWith("wiki/") &&
-        value.endsWith(".md")
-      )
-        paths.add(value);
-      else if (Array.isArray(value)) value.forEach(visit);
-      else if (value && typeof value === "object")
-        Object.values(value).forEach(visit);
-    };
-    visit(result);
-    return [...paths];
+    if (result.truncated === true)
+      throw new AppError(422, "知识库文件清单被截断，无法安全解析裸名链接");
+    return wikiFilePaths(result);
   }
   search(projectId: string, query: string, topK = 5) {
     return this.request(

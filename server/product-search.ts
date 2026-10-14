@@ -69,6 +69,7 @@ async function versionDirectory(
   projectId: string,
   choice: Choice,
   product: Page,
+  filePaths?: string[],
 ) {
   const pages = await db.query<Page>(
     "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 ORDER BY path,created_at DESC",
@@ -77,7 +78,7 @@ async function versionDirectory(
   const versionPaths = linkedWikiPaths(
     product.content,
     product.path,
-    pages.map((p) => p.path),
+    filePaths ?? pages.map((p) => p.path),
   ).filter((p) => p.includes("/versions/"));
   const matches = pages.filter((p) => {
     if (!versionPaths.includes(p.path)) return false;
@@ -231,7 +232,13 @@ export async function selectedCatalog(
         await wiki.read(wikiId, versionPath),
       );
     }
-    const directory = await versionDirectory(db, projectId, choice, root);
+    const directory = await versionDirectory(
+      db,
+      projectId,
+      choice,
+      root,
+      filePaths,
+    );
     const directoryVersion = parseSaleEntity(directory.content).version;
     if (
       selected.version &&
@@ -585,14 +592,21 @@ export async function validateCatalogSale(
     "SELECT id,path,content FROM snapshots WHERE project_id=$1 AND path=$2 ORDER BY created_at DESC LIMIT 1",
     [projectId, choice.path],
   );
-  const directory = root
-    ? await versionDirectory(db, projectId, choice, root)
-    : undefined;
   const pages = await db.query<Page>(
     "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 ORDER BY path,created_at DESC",
     [projectId],
   );
-  const known = pages.map((p) => p.path);
+  const hasBareLinks = pages.some((p) =>
+    /\[\[[^\]/#|]+(?:[#|][^\]]*)?\]\]/.test(p.content),
+  );
+  const { wiki, wikiId } = await boundWiki(db, projectId);
+  const filePaths = hasBareLinks
+    ? await wiki.files(wikiId)
+    : pages.map((p) => p.path);
+  const directory = root
+    ? await versionDirectory(db, projectId, choice, root, filePaths)
+    : undefined;
+  const known = [...new Set([...filePaths, ...pages.map((p) => p.path)])];
   const reachable = new Set<string>();
   const visited = new Set<string>();
   const queue = directory ? [directory] : [];

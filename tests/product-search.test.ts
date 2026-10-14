@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { openDatabase, migrate } from "../server/db.js";
-import { WikiClient, snapshotPage } from "../server/wiki.js";
+import { WikiClient, snapshotPage, wikiFilePaths } from "../server/wiki.js";
 import {
   readCatalogPage,
   searchSelected,
@@ -19,6 +19,25 @@ import {
 } from "../server/product-scope.js";
 import type { AssessmentInput } from "../shared/domain.js";
 import { parseSaleEntity } from "../server/sale-entity.js";
+test("Wiki 文件树绝对路径规范化，拒绝越界路径", () => {
+  assert.deepEqual(
+    wikiFilePaths({
+      files: [
+        { path: "//?/E:/project/wiki/entities/versions/a-v1.5.100.md" },
+        {
+          children: [{ path: "C:\\project\\wiki\\entities\\sales\\volume.md" }],
+        },
+        "wiki/entities/sale-items/item.md",
+        "E:/project/wiki/../secret.md",
+      ],
+    }),
+    [
+      "wiki/entities/versions/a-v1.5.100.md",
+      "wiki/entities/sales/volume.md",
+      "wiki/entities/sale-items/item.md",
+    ],
+  );
+});
 
 test("带点裸名双链按文件清单跨目录定位，重名不能猜测", () => {
   const version = "wiki/entities/versions/example-v1.5.100.md";
