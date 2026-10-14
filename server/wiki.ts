@@ -41,6 +41,25 @@ export class WikiClient {
   projects() {
     return this.request("/api/v1/projects");
   }
+  async files(projectId: string): Promise<string[]> {
+    const result = await this.request(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/files?root=wiki&recursive=true&maxFiles=10000`,
+    );
+    const paths = new Set<string>();
+    const visit = (value: unknown): void => {
+      if (
+        typeof value === "string" &&
+        value.startsWith("wiki/") &&
+        value.endsWith(".md")
+      )
+        paths.add(value);
+      else if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === "object")
+        Object.values(value).forEach(visit);
+    };
+    visit(result);
+    return [...paths];
+  }
   search(projectId: string, query: string, topK = 5) {
     return this.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/search`,

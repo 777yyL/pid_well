@@ -18,6 +18,46 @@ import {
   productScope,
 } from "../server/product-scope.js";
 import type { AssessmentInput } from "../shared/domain.js";
+import { parseSaleEntity } from "../server/sale-entity.js";
+
+test("带点裸名双链按文件清单跨目录定位，重名不能猜测", () => {
+  const version = "wiki/entities/versions/example-v1.5.100.md";
+  assert.deepEqual(
+    linkedWikiPaths(
+      "[[example-v1.5.100]]",
+      "wiki/entities/products/example.md",
+      [version],
+    ),
+    [version],
+  );
+  assert.throws(
+    () =>
+      linkedWikiPaths("[[missing]]", "wiki/entities/products/example.md", []),
+    /未找到/,
+  );
+  assert.throws(
+    () =>
+      linkedWikiPaths("[[same]]", "wiki/entities/products/example.md", [
+        "wiki/entities/sales/same.md",
+        "wiki/entities/sale-items/same.md",
+      ]),
+    /重名/,
+  );
+});
+
+test("Markdown 表头不作为实体版本字段，键值表仍可读取", () => {
+  assert.equal(
+    parseSaleEntity(
+      "# 产品\n| 版本 | 销售项数 | 版本快照 |\n| --- | --- | --- |\n| v1.5.100 | 54 | [[example]] |",
+    ).version,
+    "",
+  );
+  assert.equal(
+    parseSaleEntity("| 字段 | 值 |\n| --- | --- |\n| 版本 | v1.5.100 |")
+      .version,
+    "v1.5.100",
+  );
+});
 
 test("空路径使用产品标识定位，并通过指定版本目录校验销售项", async () => {
   const db = await openDatabase("", "memory://");
@@ -27,6 +67,7 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
   const cid = randomUUID(),
     rid = randomUUID();
   const originalRead = WikiClient.prototype.read;
+  const originalFiles = WikiClient.prototype.files;
   try {
     await db.query(
       "INSERT INTO users(id,username,display_name,password_hash,role) VALUES($1,'resolve_test','测试','hash','admin')",
@@ -52,14 +93,22 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
       db,
       pid,
       path,
-      "# 校园安全平台\n- 产品标识: Infovision iEducation-Safety\n[版本](../versions/infovision-ieducation-safety-v1.5.100.md)",
+      "# 校园安全平台\n- 产品标识: Infovision iEducation-Safety\n| 版本 | 销售项数 | 版本快照 |\n| --- | --- | --- |\n| v1.5.100 | 54 | [[infovision-ieducation-safety-v1.5.100]] |",
     );
     await snapshotPage(
       db,
       pid,
       versionPath,
-      "---\nversion: v1.5.100\n---\n[销售项](../sale-items/safety.md)",
+      "---\nversion: v1.5.100\n---\n[[safety-volume]]",
     );
+    const volumePath = "wiki/entities/sales/safety-volume.md";
+    await snapshotPage(db, pid, volumePath, "# 安全分册\n[[safety]]");
+    WikiClient.prototype.files = async () => [
+      path,
+      versionPath,
+      volumePath,
+      salePath,
+    ];
     const sale = await snapshotPage(
       db,
       pid,
@@ -122,6 +171,7 @@ test("空路径使用产品标识定位，并通过指定版本目录校验销�
     await assert.rejects(resolveProductPage(db, pid, choice), /多个产品档案/);
   } finally {
     WikiClient.prototype.read = originalRead;
+    WikiClient.prototype.files = originalFiles;
     await db.close();
   }
 });

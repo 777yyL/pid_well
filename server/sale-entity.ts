@@ -57,14 +57,17 @@ export function parseSaleEntity(content: string): SaleEntity {
   const meta = front ? (parseYaml(front[1]) ?? {}) : {};
   const body = front ? content.slice(front[0].length) : content;
   const fields = new Map<string, string>();
-  for (const line of body.split(/\r?\n/)) {
+  const bodyLines = body.split(/\r?\n/);
+  const separator = (line: string) => /^\s*\|?\s*:?-{3,}:?\s*\|/.test(line);
+  for (const [index, line] of bodyLines.entries()) {
     if (/^\s*\|/.test(line)) {
+      if (separator(line) || separator(bodyLines[index + 1] ?? "")) continue;
       const cells = line
         .replace(/\[\[([^\]|]+)\|[^\]]+\]\]/g, "[[$1]]")
         .split("|")
         .map(clean)
         .filter(Boolean);
-      if (cells.length >= 2 && !/^-+$/.test(cells[0]))
+      if (cells.length === 2 && !/^-+$/.test(cells[0]))
         fields.set(cells[0], cells[1]);
     }
     if (/^\s*[-*]\s/.test(line)) {
