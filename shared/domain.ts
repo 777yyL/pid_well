@@ -59,7 +59,22 @@ export const productCandidateSchema = productChoiceSchema.extend({
   gaps: z.string().max(2000).default(""),
   evidence: z.array(evidenceSchema).min(1).max(5),
 });
+export const productCombinationSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  summary: z.string().trim().min(10).max(300),
+  products: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(200),
+        version: z.string().trim().max(100).default(""),
+        role: z.string().trim().min(1).max(200),
+      }),
+    )
+    .min(1)
+    .max(20),
+});
 export interface ProductScope {
+  combinations?: z.infer<typeof productCombinationSchema>[];
   revision: number;
   status: "pending" | "confirmed" | "legacy";
   recommendations: z.infer<typeof productCandidateSchema>[];

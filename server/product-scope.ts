@@ -6,6 +6,7 @@ import { validateCatalogSale, sameVersion } from "./product-search.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import {
   productCandidateSchema,
+  productCombinationSchema,
   productChoiceSchema,
   type ProductScope,
   type AssessmentInput,
@@ -18,24 +19,49 @@ export async function productScope(
     "SELECT revision,status,recommendations,selected,strategy,confirmed_by FROM product_scopes WHERE project_id=$1",
     [projectId],
   );
-  return (
-    row ?? {
-      revision: 1,
-      status: "pending",
-      recommendations: [],
-      selected: [],
-      strategy: "",
-      confirmed_by: null,
-    }
+  const [recommendation] = await db.query<{
+    data: { combinations?: ProductScope["combinations"] };
+  }>(
+    "SELECT data FROM audit_log WHERE project_id=$1 AND action='products_recommended' ORDER BY id DESC LIMIT 1",
+    [projectId],
   );
+  return row
+    ? { ...row, combinations: recommendation?.data.combinations ?? [] }
+    : {
+        revision: 1,
+        status: "pending",
+        recommendations: [],
+        selected: [],
+        strategy: "",
+        confirmed_by: null,
+      };
 }
 export async function recommendProducts(
   db: Database,
   projectId: string,
   input: unknown,
   runId: string,
+  combinationInput: unknown = [],
 ) {
   const candidates = productCandidateSchema.array().min(1).max(20).parse(input);
+  const combinations = productCombinationSchema
+    .array()
+    .max(5)
+    .parse(combinationInput);
+  for (const combination of combinations) {
+    const identities = combination.products.map((p) =>
+      JSON.stringify([p.name, p.version]),
+    );
+    if (new Set(identities).size !== identities.length)
+      throw new AppError(422, "推荐组合不能重复包含同一产品及版本");
+    if (
+      combination.products.some(
+        (p) =>
+          !candidates.some((c) => c.name === p.name && c.version === p.version),
+      )
+    )
+      throw new AppError(422, "推荐组合只能包含本次已提供证据的候选产品及版本");
+  }
   if (
     new Set(candidates.map((c) => c.name + "@" + c.version)).size !==
     candidates.length
@@ -75,6 +101,7 @@ export async function recommendProducts(
     );
     await audit(tx, projectId, null, runId, "products_recommended", {
       candidates,
+      combinations,
     });
     return productScope(tx, projectId);
   });

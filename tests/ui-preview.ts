@@ -173,6 +173,42 @@ if (process.env.QA_PRODUCTS === "true") {
     [projectId, JSON.stringify(candidates)],
   );
 }
+if (process.env.QA_PRODUCTS === "true") {
+  await db.query(
+    "INSERT INTO audit_log(project_id,action,data) VALUES($1,'products_recommended',$2)",
+    [
+      projectId,
+      JSON.stringify({
+        combinations: [
+          {
+            name: "园区一体化方案",
+            summary:
+              "以园区综合平台统一视频、通行和事件联动，减少多系统部署。容量和授权范围需要后续核实。",
+            products: [
+              {
+                name: "园区综合管理平台",
+                version: "v2.1",
+                role: "主平台：统一视频、人员通行与事件联动",
+              },
+            ],
+          },
+          {
+            name: "轻量通行方案",
+            summary:
+              "面向独立门禁场景，优先部署轻量平台；不将综合视频能力作为已满足项。",
+            products: [
+              {
+                name: "轻量门禁平台",
+                version: "v1.0",
+                role: "通行管理：门禁权限、人员通行与事件查询",
+              },
+            ],
+          },
+        ],
+      }),
+    ],
+  );
+}
 if (process.env.QA_ALTERNATIVES === "true") {
   const chosen = {
     name: "当前门禁平台",

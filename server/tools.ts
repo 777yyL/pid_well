@@ -9,6 +9,7 @@ import {
   assessmentSchema,
   criteriaSchema,
   productCandidateSchema,
+  productCombinationSchema,
 } from "../shared/domain.js";
 import {
   saveRequirements,
@@ -151,13 +152,17 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       "recommend_products",
       "推荐候选产品",
       "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
-      z.object({ candidates: productCandidateSchema.array().min(1).max(20) }),
+      z.object({
+        candidates: productCandidateSchema.array().min(1).max(20),
+        combinations: productCombinationSchema.array().min(1).max(5),
+      }),
       async (args) => {
         const result = await recommendProducts(
           db,
           projectId,
           args.candidates,
           runId,
+          args.combinations,
         );
         await ctx.emit("products_recommended", {
           count: result.recommendations.length,

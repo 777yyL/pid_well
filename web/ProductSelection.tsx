@@ -34,10 +34,19 @@ export function ProductSelection({
   onSend: (text: string) => Promise<void>;
 }) {
   const [form] = Form.useForm();
+  const combinations = scope.combinations ?? [];
+  function chooseProducts(products: { name: string; version: string }[]) {
+    if (!canChoose) return;
+    form.setFieldValue("choices", products.map(key));
+    message.success(
+      `已选中 ${products.length} 个推荐产品，可调整后确认范围；自定义产品保留`,
+    );
+  }
   const selectedProducts: string[] = Form.useWatch("choices", form) ?? [];
   const [detailKey, setDetailKey] = useState<string | null>(null);
   const detail = scope.recommendations.find((p) => key(p) === detailKey);
   const [busy, setBusy] = useState(false);
+  const canChoose = !locked && !active && !busy;
   const { message, modal } = AntApp.useApp();
   useEffect(() => {
     const recommended = new Set(scope.recommendations.map(key));
@@ -125,7 +134,7 @@ export function ProductSelection({
           onClick={() => {
             setBusy(true);
             void onSend(
-              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
+              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据，并通过 combinations 给出1–3套推荐组成，每套明确产品及版本、各产品分工与简洁组合理由。互为替代的产品不要默认组合。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
             )
               .catch(() => {})
               .finally(() => setBusy(false));
@@ -157,41 +166,167 @@ export function ProductSelection({
         />
       )}
       <Modal
-        title={
-          detail
-            ? `${detail.name}${detail.version ? " · " + detail.version : ""}`
-            : "产品推荐详情"
-        }
+        title="产品推荐详情"
         open={!!detail}
         onCancel={() => setDetailKey(null)}
-        footer={<Button onClick={() => setDetailKey(null)}>关闭</Button>}
+        footer={
+          <Space>
+            <Button onClick={() => setDetailKey(null)}>关闭</Button>
+            <Button
+              type="primary"
+              disabled={
+                !canChoose ||
+                (!!detail && selectedProducts.includes(key(detail)))
+              }
+              onClick={() => {
+                if (detail) {
+                  form.setFieldValue("choices", [
+                    ...new Set([...selectedProducts, key(detail)]),
+                  ]);
+                  message.success("已勾选此产品，可继续调整选型");
+                  setDetailKey(null);
+                }
+              }}
+            >
+              {detail && selectedProducts.includes(key(detail))
+                ? "已选中此产品"
+                : "选中此产品"}
+            </Button>
+          </Space>
+        }
         width={720}
         className="product-detail-modal"
       >
         {detail && (
-          <div className="knowledge-markdown">
-            <h5>推荐理由</h5>
-            <KnowledgeMarkdown text={detail.reason} />
-            <h5>覆盖方向</h5>
-            <KnowledgeMarkdown text={detail.coverage} />
-            {detail.gaps && (
-              <>
-                <h5>待核实 / 缺口</h5>
-                <KnowledgeMarkdown text={detail.gaps} />
-              </>
-            )}
-            {detail.path && <p className="muted">产品页：{detail.path}</p>}
-            {detail.evidence.map((e, i) => (
-              <section className="product-card-evidence" key={i}>
-                <b>
-                  总览证据 L{e.lineStart}–L{e.lineEnd}
-                </b>
-                <KnowledgeMarkdown text={e.quote} />
+          <div className="recommendation-detail">
+            <div className="recommendation-detail-heading">
+              <span className="product-card-icon">
+                <AppstoreOutlined />
+              </span>
+              <div>
+                <span className="recommendation-eyebrow">
+                  候选产品 · 总览初筛
+                </span>
+                <h3>{detail.name}</h3>
+                <Tag>{detail.version || "版本待核实"}</Tag>
+              </div>
+            </div>
+            <div className="recommendation-facts">
+              <section>
+                <h4>覆盖能力</h4>
+                <div className="recommendation-fact-body">
+                  <KnowledgeMarkdown text={detail.coverage} />
+                </div>
               </section>
-            ))}
+              <section className="recommendation-caution">
+                <h4>待核实项</h4>
+                <div className="recommendation-fact-body">
+                  <KnowledgeMarkdown
+                    text={
+                      detail.gaps ||
+                      "暂无单列缺口，具体规格与授权仍需逐条核实。"
+                    }
+                  />
+                </div>
+              </section>
+            </div>
+            <details className="recommendation-expand">
+              <summary>为什么推荐这个产品</summary>
+              <KnowledgeMarkdown text={detail.reason} />
+            </details>
+            <details className="recommendation-expand">
+              <summary>查看总览原文证据 · {detail.evidence.length} 条</summary>
+              {detail.evidence.map((e, i) => (
+                <section className="product-card-evidence" key={i}>
+                  <b>
+                    L{e.lineStart}–L{e.lineEnd}
+                  </b>
+                  <KnowledgeMarkdown text={e.quote} />
+                </section>
+              ))}
+              {detail.path && <p className="muted">产品页：{detail.path}</p>}
+            </details>
+            <p className="recommendation-footnote">
+              推荐来自产品总览，销售项、硬指标与授权范围将在确认选型后核实。
+            </p>
           </div>
         )}
       </Modal>
+      {!!scope.recommendations.length && (
+        <section className="recommendation-compositions">
+          <div className="composition-heading">
+            <h4>AI 推荐组成</h4>
+            <span>先选方案，再核实销售项</span>
+          </div>
+          {combinations.length ? (
+            combinations.map((c, i) => {
+              const chosen =
+                c.products.every((p) => selectedProducts.includes(key(p))) &&
+                selectedProducts.length === c.products.length;
+              return (
+                <article
+                  className={`composition-card ${chosen ? "chosen" : ""}`}
+                  key={i}
+                >
+                  <div className="composition-title">
+                    <div>
+                      <span className="recommendation-eyebrow">
+                        方案 {String(i + 1).padStart(2, "0")} ·{" "}
+                        {c.products.length === 1 ? "单产品" : "组合产品"}
+                      </span>
+                      <h4>{c.name}</h4>
+                    </div>
+                    <Button
+                      type={chosen ? "default" : "primary"}
+                      disabled={!canChoose}
+                      onClick={() => chooseProducts(c.products)}
+                    >
+                      {chosen ? "已选中" : "一键选中"}
+                    </Button>
+                  </div>
+                  <p className="composition-summary">{c.summary}</p>
+                  <div className="composition-members">
+                    {c.products.map((p) => (
+                      <div key={key(p)}>
+                        <span className="product-card-icon">
+                          <AppstoreOutlined />
+                        </span>
+                        <div>
+                          <b>{p.name}</b>
+                          <Tag>{p.version || "版本待核实"}</Tag>
+                          <p>{p.role}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="composition-empty">
+              <p>
+                这份推荐尚未提供组合方案。可逐个选择产品，或让 AI
+                补充产品组成与分工。
+              </p>
+              <Button
+                disabled={
+                  active || locked || busy || scope.status !== "pending"
+                }
+                onClick={() =>
+                  void onSend(
+                    "请读取当前项目选型和原总览证据，使用 recommend_products 重新保存候选并补充 combinations 推荐方案，明确各产品版本和分工；互为替代的产品分成不同方案。等待用户确认。",
+                  ).catch(() => {})
+                }
+              >
+                补充推荐组成
+              </Button>
+            </div>
+          )}
+          <p className="recommendation-footnote">
+            一键选中会替换候选产品勾选，保留自定义产品；点击“确认产品范围”后生效。
+          </p>
+        </section>
+      )}
       {!!alternatives.length && (
         <section className="product-alternatives">
           <h4>其他产品可满足</h4>

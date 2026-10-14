@@ -187,6 +187,57 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         ],
         fakeRun,
       );
+      const composition = {
+        name: "视频管理方案",
+        summary: "以测试产品统一提供视频管理能力，具体规格需继续核实",
+        products: [
+          { name: "测试产品", version: "v1", role: "主产品：视频管理" },
+        ],
+      };
+      const withCompositions = await recommendProducts(
+        db,
+        projectId,
+        recommendations.recommendations,
+        fakeRun,
+        [composition],
+      );
+      assert.deepEqual(withCompositions.combinations, [composition]);
+      assert.deepEqual((await productScope(db, projectId)).combinations, [
+        composition,
+      ]);
+      await assert.rejects(
+        recommendProducts(
+          db,
+          projectId,
+          recommendations.recommendations,
+          fakeRun,
+          [
+            {
+              ...composition,
+              products: [
+                { name: "不存在的候选", version: "v1", role: "主产品" },
+              ],
+            },
+          ],
+        ),
+        /候选产品及版本/,
+      );
+      await assert.rejects(
+        recommendProducts(
+          db,
+          projectId,
+          recommendations.recommendations,
+          fakeRun,
+          [
+            {
+              ...composition,
+              products: [composition.products[0], composition.products[0]],
+            },
+          ],
+        ),
+        /重复包含/,
+      );
+      recommendations.revision = withCompositions.revision;
       assert.equal(recommendations.status, "pending");
       const choose = {
         expectedRevision: recommendations.revision,
