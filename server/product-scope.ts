@@ -3,6 +3,7 @@ import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
 import { validateCatalogSale, sameVersion } from "./product-search.js";
+import { overviewProduct } from "./product-overview.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import {
   productCandidateSchema,
@@ -25,8 +26,30 @@ export async function productScope(
     "SELECT data FROM audit_log WHERE project_id=$1 AND action IN ('products_recommended','product_plans_recommended') ORDER BY id DESC LIMIT 1",
     [projectId],
   );
+  const [overview] = row?.recommendations.length
+    ? await db.query<{ content: string }>(
+        "SELECT content FROM snapshots WHERE project_id=$1 AND kind='overview' ORDER BY created_at DESC LIMIT 1",
+        [projectId],
+      )
+    : [];
   return row
-    ? { ...row, combinations: recommendation?.data.combinations ?? [] }
+    ? {
+        ...row,
+        recommendations: row.recommendations.map((p) => {
+          const info = overview
+            ? overviewProduct(overview.content, p)
+            : undefined;
+          return info
+            ? {
+                ...p,
+                ...Object.fromEntries(
+                  Object.entries(info).filter(([, v]) => !!v),
+                ),
+              }
+            : p;
+        }),
+        combinations: recommendation?.data.combinations ?? [],
+      }
     : {
         revision: 1,
         status: "pending",
@@ -116,6 +139,7 @@ export async function recommendProducts(
     for (const candidate of candidates) {
       const infoEvidence = candidate.evidence.map((e) => e.quote).join("\n");
       for (const field of [
+        "productName",
         "productId",
         "productLine",
         "department",

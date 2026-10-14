@@ -165,10 +165,18 @@ if (process.env.QA_REPORTS === "true") {
 if (process.env.QA_PRODUCTS === "true") {
   const quote =
     "园区平台支持视频管理、人员通行和事件联动；轻量平台适合独立门禁场景。";
-  const page = await snapshotPage(db, projectId, "wiki/overview.md", quote);
+  const overviewText =
+    quote +
+    "\n## iSecure Center\n产品标识 iSecure Center · 产品名称 综合安防管理平台 · 产品类目 综合安防软件 / 综合安防管理平台 · 所属部门 软件产品研发中心/通用软件产品部/综合安防产品部 · 维护人 左志红 产品描述 综合安防管理平台，简称iSC。";
+  const page = await snapshotPage(
+    db,
+    projectId,
+    "wiki/overview.md",
+    overviewText,
+  );
   const candidates = [
     {
-      name: "园区综合管理平台",
+      name: "iSecure Center",
       productId: "PARK-IOC",
       productLine: "综合安防",
       department: "平台产品部",
@@ -213,7 +221,7 @@ if (
               "以园区综合平台统一视频、通行和事件联动，减少多系统部署。容量和授权范围需要后续核实。",
             products: [
               {
-                name: "园区综合管理平台",
+                name: "iSecure Center",
                 version: "v2.1",
                 role: "主平台：统一视频、人员通行与事件联动",
               },
@@ -284,8 +292,20 @@ if (process.env.QA_ACTIVITY === "true") {
     document = randomUUID();
   const title = "隔离验证：读取阶段模拟，不调用模型";
   await db.query(
-    "INSERT INTO conversations(id,project_id,title) VALUES($1,$2,$3)",
-    [conversation, projectId, title],
+    "INSERT INTO conversations(id,project_id,title,plan) VALUES($1,$2,$3,$4)",
+    [
+      conversation,
+      projectId,
+      title,
+      JSON.stringify([
+        { id: "prepare", title: "了解项目背景", status: "done" },
+        { id: "read", title: "阅读招标原文", status: "running" },
+        { id: "extract", title: "提取技术条款", status: "pending" },
+        { id: "select", title: "确认产品选型", status: "pending" },
+        { id: "verify", title: "核实销售项与规格", status: "pending" },
+        { id: "report", title: "复核与导出成果", status: "pending" },
+      ]),
+    ],
   );
   await db.query(
     "INSERT INTO documents(id,project_id,name,storage_name,hash,status,lines) VALUES($1,$2,'隔离验证清单.txt','qa-activity','qa-activity','ready',$3)",

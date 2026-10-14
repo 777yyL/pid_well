@@ -1338,3 +1338,157 @@
     font-size: 13px;
   }
 }
+
+.plan-bar {
+  padding: 10px 20px;
+  flex-shrink: 0;
+  max-height: 35vh;
+  overflow: auto;
+}
+.plan-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  text-align: left;
+  cursor: pointer;
+  color: #64748b;
+  font-size: 11px;
+}
+.plan-toggle b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #405773;
+  font-weight: 500;
+}
+.plan-toggle small {
+  font-variant-numeric: tabular-nums;
+  color: #8291a6;
+}
+.plan-toggle:focus-visible {
+  outline: 2px solid #82a9e7;
+  outline-offset: 4px;
+}
+.plan-bar .ant-steps {
+  margin-top: 14px;
+}
+.recommended-product-grid {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.recommended-product-card {
+  padding: 12px 14px;
+  border-radius: 8px;
+}
+.recommended-product-card .product-card-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 15px;
+}
+.recommended-product-card .product-card-heading h4 {
+  font-size: 14px;
+  margin-bottom: 5px;
+}
+.recommended-product-card .product-card-identity code {
+  font-size: 11px;
+}
+.recommended-product-card .product-basic-info.compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 16px;
+  border: 0;
+  padding: 0;
+  margin: 10px 0 8px;
+}
+.recommended-product-card .product-basic-info.compact > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.recommended-product-card .product-basic-info.compact dt {
+  font-size: 10px;
+  margin: 0;
+  flex-shrink: 0;
+}
+.recommended-product-card .product-basic-info.compact dd {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recommended-product-card .product-details-button {
+  font-size: 11px;
+}
+.candidate-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 18px 0 10px;
+  font-size: 13px;
+  color: #405773;
+}
+.candidate-list-toolbar .ant-btn {
+  font-size: 11px;
+}
+.scheme-list-row {
+  border-radius: 0;
+  margin: 0;
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px solid #e5ebf3;
+  background: transparent;
+}
+.scheme-list-row.chosen {
+  border-color: #dce6f5;
+  background: #f6f9ff;
+  border-left: 3px solid #82a9e7;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.scheme-list-row .composition-title h4 {
+  font-size: 14px;
+  margin: 3px 0 0;
+}
+.scheme-list-row .composition-title .ant-btn {
+  font-size: 12px;
+  height: 30px;
+}
+.scheme-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+.scheme-members .ant-tag {
+  margin: 0;
+  font-size: 11px;
+  background: #f4f7fb;
+  color: #577197;
+  border-color: #e4ebf5;
+}
+.scheme-list-row .composition-summary {
+  font-size: 12px;
+  margin: 7px 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.scheme-detail-link {
+  padding: 0;
+  height: auto;
+  font-size: 11px;
+}
+.selection-plan-explainer {
+  font-size: 12px;
+  margin-bottom: 10px;
+}

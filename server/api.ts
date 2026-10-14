@@ -18,7 +18,7 @@ import { config } from "./config.js";
 import { productScope, selectProducts } from "./product-scope.js";
 import { AppError } from "./errors.js";
 import { settingsView, saveSettings, loadSettings } from "./settings.js";
-import { WikiClient } from "./wiki.js";
+import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { parseDocument, supportedExtensions } from "./documents.js";
 import { assessmentRows, saveAssessments } from "./assessment.js";
 import { assessmentSchema, type User, type Run } from "../shared/domain.js";
@@ -333,6 +333,21 @@ export function routes(
         [id],
       ),
     };
+  });
+  app.post("/api/projects/:id/product-info/refresh", async (request) => {
+    const user = requireUser(request),
+      id = param(request, "id");
+    await accessProject(db, user, id);
+    const [project] = await db.query<{ wiki_project_id: string }>(
+      "SELECT wiki_project_id FROM projects WHERE id=$1",
+      [id],
+    );
+    const content = await new WikiClient(db).read(
+      project.wiki_project_id,
+      PRODUCT_OVERVIEW_PATH,
+    );
+    await snapshotPage(db, id, PRODUCT_OVERVIEW_PATH, content);
+    return productScope(db, id);
   });
   app.put("/api/projects/:id/product-scope", async (request) => {
     const user = requireUser(request),

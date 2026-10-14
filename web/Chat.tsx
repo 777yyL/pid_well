@@ -90,6 +90,8 @@ export function Chat({
   connectionError?: string;
 }) {
   const [draft, setDraft] = useState("");
+  const [planExpanded, setPlanExpanded] = useState(false);
+  useEffect(() => setPlanExpanded(false), [conversation?.id]);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     if (!activeRun) return;
@@ -174,6 +176,10 @@ export function Chat({
     }
   }
   const plan = conversation?.plan ?? [];
+  const currentStep =
+    plan.find((s) => s.status === "running") ??
+    plan.find((s) => s.status === "blocked") ??
+    plan.find((s) => s.status === "pending");
   return (
     <section className="chat-pane">
       <header className="pane-header">
@@ -200,27 +206,35 @@ export function Chat({
       )}
       {plan.length > 0 && (
         <div className="plan-bar">
-          <div className="plan-heading">
+          <button
+            className="plan-toggle"
+            aria-expanded={planExpanded}
+            onClick={() => setPlanExpanded((v) => !v)}
+          >
             <span>执行计划</span>
-            <span>
-              {plan.filter((s) => s.status === "done").length} / {plan.length}
-            </span>
-          </div>
-          <Steps
-            size="small"
-            direction="vertical"
-            items={plan.map((step) => ({
-              title: step.title,
-              status:
-                step.status === "done"
-                  ? "finish"
-                  : step.status === "running"
-                    ? "process"
-                    : step.status === "blocked"
-                      ? "error"
-                      : "wait",
-            }))}
-          />
+            <b>{currentStep?.title ?? "计划步骤已完成"}</b>
+            <small>
+              {plan.filter((s) => s.status === "done").length}/{plan.length}
+            </small>
+            <span>{planExpanded ? "收起" : "展开"}</span>
+          </button>
+          {planExpanded && (
+            <Steps
+              size="small"
+              direction="vertical"
+              items={plan.map((step) => ({
+                title: step.title,
+                status:
+                  step.status === "done"
+                    ? "finish"
+                    : step.status === "running"
+                      ? "process"
+                      : step.status === "blocked"
+                        ? "error"
+                        : "wait",
+              }))}
+            />
+          )}
         </div>
       )}
       <div

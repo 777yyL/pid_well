@@ -155,7 +155,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "recommend_products",
       "推荐候选产品",
-      "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据。提取总览中的 productId 产品标识、productLine 产品线、department 产品部门、owner 负责人；每个有值的字段必须逐字出现在 evidence.quote 中，缺失则留空，name 填产品名称；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
+      "在读取当前清单和知识库总览后保存候选产品。列出覆盖方向、推荐理由、缺口和总览证据。提取总览中的 productId 产品标识、productLine 产品线/产品类目、department 产品部门/所属部门、owner 负责人/维护人、productName 展示名称；每个有值的字段必须逐字出现在 evidence.quote 中，缺失则留空，name 保留用于匹配的产品标识，productName 填产品名称；允许多个产品满足同一需求。推荐不等于用户选择，保存后等待用户在产品选型页确认，不得自动确定产品。",
       z.object({
         candidates: productCandidateSchema.array().min(1).max(20),
         combinations: productCombinationSchema.array().min(1).max(5),

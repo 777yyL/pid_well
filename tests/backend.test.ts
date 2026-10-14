@@ -15,7 +15,7 @@ import {
   assessmentRows,
   checkOriginal,
 } from "../server/assessment.js";
-import { snapshotPage } from "../server/wiki.js";
+import { snapshotPage, WikiClient } from "../server/wiki.js";
 import { createReport, safeCell } from "../server/reports.js";
 import { parseDocument } from "../server/documents.js";
 import { config } from "../server/config.js";
@@ -320,6 +320,24 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       );
       assert.equal(confirmed.statusCode, 200, confirmed.body);
       assert.equal(confirmed.json().selected.length, 2);
+      const readOriginal = WikiClient.prototype.read;
+      WikiClient.prototype.read = async (_wiki, path) => {
+        assert.equal(path, "wiki/overview.md");
+        return "产品标识 VMS-TEST · 产品名称 测试产品 · 产品类目 视频管理 · 所属部门 平台部 · 维护人 新维护人 产品描述 视频平台。";
+      };
+      try {
+        const refresh = await request(
+          "POST",
+          `/api/projects/${projectId}/product-info/refresh`,
+          {},
+        );
+        assert.equal(refresh.statusCode, 200, refresh.body);
+        assert.equal(refresh.json().recommendations[0].owner, "新维护人");
+        assert.deepEqual(refresh.json().selected, confirmed.json().selected);
+      } finally {
+        WikiClient.prototype.read = readOriginal;
+      }
+
       assert.equal(
         (
           await request(

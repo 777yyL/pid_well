@@ -54,6 +54,7 @@ export const productChoiceSchema = z.object({
     ),
 });
 export const productCandidateSchema = productChoiceSchema.extend({
+  productName: z.string().trim().max(200).optional(),
   productId: z.string().trim().max(200).optional(),
   productLine: z.string().trim().max(200).optional(),
   department: z.string().trim().max(200).optional(),

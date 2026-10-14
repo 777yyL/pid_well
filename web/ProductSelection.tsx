@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import {
   Alert,
   Modal,
@@ -66,6 +66,8 @@ export function ProductSelection({
   onSend: (text: string) => Promise<void>;
 }) {
   const [form] = Form.useForm();
+  const autoPlanRequests = useRef(new Set<string>());
+  const [refreshingInfo, setRefreshingInfo] = useState(false);
   const combinations = scope.combinations ?? [];
   function chooseProducts(products: { name: string; version: string }[]) {
     if (!canChoose) return;
@@ -105,6 +107,42 @@ export function ProductSelection({
       if (e instanceof Error) message.error(e.message);
     } finally {
       setBusy(false);
+    }
+  }
+  useEffect(() => {
+    const requestKey = projectId + ":" + scope.revision;
+    if (
+      scope.recommendations.length &&
+      !combinations.length &&
+      !active &&
+      !busy &&
+      scope.status !== "legacy" &&
+      !autoPlanRequests.current.has(requestKey)
+    ) {
+      autoPlanRequests.current.add(requestKey);
+      void generatePlans();
+    }
+  }, [
+    projectId,
+    scope.revision,
+    scope.status,
+    scope.recommendations.length,
+    combinations.length,
+    active,
+    busy,
+  ]);
+  async function refreshProductInfo() {
+    setRefreshingInfo(true);
+    try {
+      await api(`/projects/${projectId}/product-info/refresh`, {
+        method: "POST",
+      });
+      await onRefresh();
+      message.success("产品基本信息已按最新总览更新");
+    } catch (e) {
+      if (e instanceof Error) message.error(e.message);
+    } finally {
+      setRefreshingInfo(false);
     }
   }
   async function addAlternative(p: ProductAlternative["data"]["product"]) {
@@ -251,7 +289,7 @@ export function ProductSelection({
                 <span className="recommendation-eyebrow">
                   候选产品 · 总览初筛
                 </span>
-                <h3>{detail.name}</h3>
+                <h3>{detail.productName || detail.name}</h3>
                 <Tag>{detail.version || "版本待核实"}</Tag>
               </div>
             </div>
@@ -304,7 +342,7 @@ export function ProductSelection({
             <span>AI 建议如何选择产品</span>
           </div>
           <p className="selection-plan-explainer">
-            一套方案就是建议选择的产品集合：单个产品可独立覆盖需求，多产品则分工配合。采用方案会勾选对应产品，确认后才开始匹配。
+            选择一套建议方案，再确认产品范围。也可以在下方调整产品。
           </p>
           {combinations.length ? (
             combinations.map((c, i) => {
@@ -313,7 +351,7 @@ export function ProductSelection({
                 selectedProducts.length === c.products.length;
               return (
                 <article
-                  className={`composition-card ${chosen ? "chosen" : ""}`}
+                  className={`composition-card scheme-list-row ${chosen ? "chosen" : ""}`}
                   key={i}
                 >
                   <div className="composition-title">
@@ -332,32 +370,54 @@ export function ProductSelection({
                       {chosen ? "已勾选" : "采用这套方案"}
                     </Button>
                   </div>
-                  <p className="composition-summary">{c.summary}</p>
-                  <div className="composition-members">
+                  <div className="scheme-members">
                     {c.products.map((p) => (
-                      <div key={key(p)}>
-                        <span className="product-card-icon">
-                          <AppstoreOutlined />
-                        </span>
-                        <div>
-                          <b>{p.name}</b>
-                          <Tag>{p.version || "版本待核实"}</Tag>
-                          <p>{p.role}</p>
-                        </div>
-                      </div>
+                      <Tag key={key(p)}>
+                        {scope.recommendations.find((r) => key(r) === key(p))
+                          ?.productName || p.name}
+                        {p.version ? ` · ${p.version}` : ""}
+                      </Tag>
                     ))}
                   </div>
+                  <p className="composition-summary">{c.summary}</p>
+                  <Button
+                    type="link"
+                    className="scheme-detail-link"
+                    onClick={() =>
+                      modal.info({
+                        title: c.name,
+                        width: 600,
+                        content: (
+                          <div>
+                            <KnowledgeMarkdown text={c.summary} />
+                            {c.products.map((p) => (
+                              <section key={key(p)}>
+                                <h5>
+                                  {p.name} {p.version}
+                                </h5>
+                                <KnowledgeMarkdown text={p.role} />
+                              </section>
+                            ))}
+                          </div>
+                        ),
+                      })
+                    }
+                  >
+                    查看分工与理由
+                  </Button>
                 </article>
               );
             })
           ) : (
             <div className="selection-plan-empty">
               <div>
-                <b>让 AI 帮你决定选哪些产品</b>
+                <b>
+                  {active || busy ? "正在生成选型建议" : "暂未生成选型建议"}
+                </b>
                 <p>
-                  当前已有 {scope.recommendations.length}{" "}
-                  个候选，尚未生成选型建议。点击右侧按钮，AI
-                  会比较现有候选并给出建议，不会改变你的产品范围。
+                  {active || busy
+                    ? "方案生成后会自动列在这里，请关注对话中的进度。"
+                    : "自动生成尚未返回方案，可点击重试。不会改变已确认范围。"}
                 </p>
               </div>
               <Button
@@ -365,7 +425,7 @@ export function ProductSelection({
                 disabled={active || busy || scope.status === "legacy"}
                 onClick={() => void generatePlans()}
               >
-                生成选型建议
+                重新生成建议
               </Button>
             </div>
           )}
@@ -439,7 +499,19 @@ export function ProductSelection({
         disabled={locked || active}
         style={{ marginTop: 20 }}
       >
-        <Form.Item name="choices" label="推荐候选产品">
+        <div className="candidate-list-toolbar">
+          <b>候选产品 · {scope.recommendations.length}</b>
+          <Button
+            size="small"
+            type="text"
+            loading={refreshingInfo}
+            disabled={active || refreshingInfo || !scope.recommendations.length}
+            onClick={() => void refreshProductInfo()}
+          >
+            更新产品资料
+          </Button>
+        </div>
+        <Form.Item name="choices">
           <Checkbox.Group className="recommended-product-grid">
             {scope.recommendations.map((p) => (
               <article
@@ -451,7 +523,7 @@ export function ProductSelection({
                     <AppstoreOutlined />
                   </span>
                   <div>
-                    <h4>{p.name}</h4>
+                    <h4>{p.productName || p.name}</h4>
                     <div className="product-card-identity">
                       <code>{p.productId || "标识未提供"}</code>
                       {p.version && <Tag>{p.version}</Tag>}
@@ -463,24 +535,13 @@ export function ProductSelection({
                   />
                 </div>
                 <ProductBasics product={p} compact />
-                <div className="product-card-coverage">
-                  <b>推荐覆盖方向</b>
-                  <p className="product-card-summary">
-                    {p.coverage.replace(/^[\s]*[-*]\s+/gm, "")}
-                  </p>
-                </div>
-                <div className="product-card-meta">
-                  <span>{p.evidence.length} 条推荐证据</span>
-                  {p.gaps && (
-                    <span className="product-gap-label">有待核实项</span>
-                  )}
-                </div>
                 <Button
                   className="product-details-button"
+                  disabled={false}
                   type="link"
                   onClick={() => setDetailKey(key(p))}
                 >
-                  查看推荐理由与覆盖情况
+                  查看能力、基本信息与依据
                 </Button>
               </article>
             ))}
