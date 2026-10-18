@@ -77,9 +77,11 @@ export class WikiClient {
       { query, topK, includeContent: true },
     );
   }
-  graph(projectId: string, query: string) {
+  graph(projectId: string, query: string, options: { limit?: number; nodeType?: string } = {}) {
+    const params = new URLSearchParams({ q: query, limit: String(options.limit ?? 30) });
+    if (options.nodeType) params.set("nodeType", options.nodeType);
     return this.request(
-      `/api/v1/projects/${encodeURIComponent(projectId)}/graph?q=${encodeURIComponent(query)}&limit=30`,
+      `/api/v1/projects/${encodeURIComponent(projectId)}/graph?${params}`,
     );
   }
   async read(projectId: string, path: string) {

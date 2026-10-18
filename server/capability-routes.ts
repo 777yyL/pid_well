@@ -3,12 +3,14 @@ import type { Database } from "./db.js";
 import { requireUser } from "./auth.js";
 import { z } from "zod";
 import { CapabilityService } from "./capability.js";
+import { quickSearchRoutes } from "./quick-search.js";
 import {
   capabilityCreateSchema,
   capabilityQuestionSchema,
 } from "../shared/capability.js";
 
 export async function capabilityRoutes(app: FastifyInstance, db: Database) {
+  quickSearchRoutes(app, db);
   const service = new CapabilityService(db);
   await service.recover();
   app.addHook("onClose", () => service.close());

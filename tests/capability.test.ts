@@ -92,18 +92,23 @@ test("能力检索全链路：异步候选、证据核验、追问、项目候�
       "产品标识 Demo · 产品名称 测试产品 · 所属部门 软件部 · 维护人 测试人 产品描述 门禁平台",
   };
   let broken = false;
+  let fileLists = 0;
+  let pageReads = 0;
+  let graphReads = 0;
+  let graphQuery: Record<string, string> = {};
   const modelInputs: Record<string, unknown>[] = [];
   wiki.get("/api/v1/projects", () => ({
     projects: [{ id: "wiki", name: "测试知识库" }],
   }));
-  wiki.get("/api/v1/projects/:id/files", () => ({
+  wiki.get("/api/v1/projects/:id/files", () => { fileLists++; return ({
     truncated: false,
     files: Object.keys(pages).map((path) => ({
       path: "//?/D:/company/" + path,
     })),
-  }));
-  wiki.get("/api/v1/projects/:id/graph", () => ({ nodes: [], edges: [] }));
+  }); });
+  wiki.get("/api/v1/projects/:id/graph", request => { graphReads++; graphQuery = request.query as Record<string,string>; return { nodes: [{id:"sale",path:sale,label:"门禁管理"},{id:"product",path:product,label:"测试产品"}], edges: [{source:"sale",target:"product"}] }; });
   wiki.get("/api/v1/projects/:id/files/content", async (request, reply) => {
+    pageReads++;
     const path = (request.query as { path: string }).path;
     return pages[path]
       ? { content: pages[path] }
@@ -231,6 +236,31 @@ test("能力检索全链路：异步候选、证据核验、追问、项目候�
     return response.json().id as string;
   };
   try {
+    await t.test("快速检索只调用搜索接口，不调用模型、文件清单、图谱或逐页读取", async () => {
+      const before = [fileLists, pageReads, graphReads, modelInputs.length];
+      const result = await app.inject({ method: "POST", url: "/api/capability/search", headers, payload: { wikiProjectId: "wiki", query: "人脸通行" } });
+      assert.equal(result.statusCode, 200, result.body);
+      assert.equal(result.json().results[0].path, sale);
+      assert.deepEqual([fileLists, pageReads, graphReads, modelInputs.length], before);
+      const graph = await app.inject({ method:"POST",url:"/api/capability/graph",headers,payload:{wikiProjectId:"wiki",query:"门禁 & 通行",nodeType:"entity",limit:60} });
+      assert.equal(graph.statusCode,200,graph.body);
+      assert.equal(graph.json().edges.length,1);
+      assert.equal(graphReads,before[2]+1);
+      assert.deepEqual([fileLists,pageReads,modelInputs.length],[before[0],before[1],before[3]]);
+      assert.equal(graphQuery.q,"门禁 & 通行");
+      assert.equal(graphQuery.nodeType,"entity");
+      assert.equal(graphQuery.limit,"60");
+      const source = await app.inject({ method: "POST", url: "/api/capability/source", headers, payload: { wikiProjectId: "wiki", path: sale } });
+      assert.equal(source.statusCode, 200);
+      assert.equal(source.json().content, content);
+      assert.equal(pageReads, before[1] + 1);
+      const denied = await app.inject({ method: "POST", url: "/api/capability/search", payload: { wikiProjectId: "wiki", query: "人脸通行" } });
+      assert.equal(denied.statusCode, 403); // Unauthenticated POST is rejected by CSRF before route auth.
+      broken = true;
+      const failed = await app.inject({ method: "POST", url: "/api/capability/search", headers, payload: { wikiProjectId: "wiki", query: "人脸通行" } });
+      assert.equal(failed.statusCode, 502);
+      broken = false;
+    });
     const unauthorized = await app.inject({
       method: "GET",
       url: "/api/capability/sessions",
