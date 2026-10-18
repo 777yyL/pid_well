@@ -1,5 +1,15 @@
 import { useRef, useState } from "react";
 import {
+  coverageLabel,
+  accuracySummary,
+  assessmentEvidence,
+  highRisk,
+  selectedContributions,
+} from "../shared/accuracy";
+import { SourceCoverage } from "./SourceCoverage";
+import { VerificationFields } from "./VerificationFields";
+import { SubrequirementEditor } from "./SubrequirementEditor";
+import {
   Timeline,
   Space,
   Tabs,
@@ -44,6 +54,7 @@ const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
   no_match: { label: "不满足", color: "error" },
+  unknown: { label: "待确认", color: "processing" },
 } as const;
 export function Workpane({
   workspace,
@@ -178,7 +189,8 @@ export function Workpane({
     if (!detail) return;
     setBusy(true);
     try {
-      const values = await form.validateFields();
+      await form.validateFields();
+      const values = form.getFieldsValue(true);
       const list = (value: string) =>
         value
           .split("\n")
@@ -191,7 +203,14 @@ export function Workpane({
         ok: list(values.ok),
         hard: list(values.hard),
         no: list(values.no),
+        verification: values.verification ?? detail.verification,
       };
+      if (updated.verification) {
+        updated.sales = [
+          ...new Set(selectedContributions(updated).map((c) => c.sales)),
+        ];
+        updated.evidence = assessmentEvidence(updated);
+      }
       await api(
         `/projects/${workspace.project.id}/assessments/${detail.requirementId}`,
         {
@@ -221,7 +240,8 @@ export function Workpane({
   }
   const filtered = results.filter(
     (r) =>
-      (filter === "all" || r.level === filter) &&
+      (filter === "all" ||
+        (filter === "risk" ? highRisk(r) : r.level === filter)) &&
       (!search ||
         [r.requirement_raw, r.requirementId, ...r.sales]
           .join(" ")
@@ -366,6 +386,17 @@ export function Workpane({
             ),
           },
           {
+            title: "核验点",
+            width: 122,
+            render: (_, r) => (
+              <SubrequirementEditor
+                projectId={workspace.project.id}
+                requirement={r}
+                refresh={onRefresh}
+              />
+            ),
+          },
+          {
             title: "状态",
             width: 86,
             render: (_, r) => (
@@ -388,8 +419,14 @@ export function Workpane({
   );
   const assessments = (
     <div className="tab-content">
+      <Alert
+        type="info"
+        showIcon
+        message={`处理 ${results.length}/${workspace.requirements.length} 条；原文覆盖：${workspace.sourceCoverage?.map((d) => `${d.name} ${coverageLabel(d.status)}，未检查 ${d.uncheckedLines.length} 行`).join("；") || "待检查"}。未知项不计为满足。`}
+      />
+      <SourceCoverage workspace={workspace} refresh={onRefresh} />
       <div className="result-stats">
-        {(["exact", "partial", "no_match"] as const).map((level) => (
+        {(["exact", "partial", "no_match", "unknown"] as const).map((level) => (
           <button
             key={level}
             className={`stat-item ${level} ${filter === level ? "selected" : ""}`}
@@ -413,6 +450,7 @@ export function Workpane({
           onChange={setFilter}
           options={[
             { value: "all", label: "全部结论" },
+            { value: "risk", label: "高风险 / 历史未核验" },
             ...Object.entries(levels).map(([value, l]) => ({
               value,
               label: l.label,
@@ -457,8 +495,9 @@ export function Workpane({
                   {r.source === "human"
                     ? "人工确认"
                     : r.reviewed
-                      ? "AI 已复核"
+                      ? "AI 自检完成"
                       : "待复核"}
+                  {!r.verification ? " · 历史未核验" : ""}
                 </small>
               </div>
             ),
@@ -859,8 +898,10 @@ export function Workpane({
             icon={<EditOutlined />}
             onClick={() => {
               if (detail) {
+                form.resetFields();
                 form.setFieldsValue({
                   ...detail,
+                  verification: detail.verification,
                   ok: detail.ok.join("\n"),
                   hard: detail.hard.join("\n"),
                   no: detail.no.join("\n"),
@@ -882,8 +923,9 @@ export function Workpane({
               {detail.source === "human"
                 ? "人工确认"
                 : detail.reviewed
-                  ? "AI 已复核"
+                  ? "AI 自检完成"
                   : "待复核"}
+              {!detail.verification ? " · 历史未核验" : ""}
             </Tag>
             <h3>招标原文</h3>
             <blockquote>{detail.requirement_raw}</blockquote>
@@ -898,6 +940,8 @@ export function Workpane({
             </div>
             <h3>结论说明</h3>
             <p>{detail.note}</p>
+            <h3>子要求、组合与风险核验</h3>
+            <p style={{ whiteSpace: "pre-wrap" }}>{accuracySummary(detail)}</p>
             {(["ok", "hard", "no"] as const).map((key) => (
               <section className={`assessment-finding ${key}`} key={key}>
                 <h4>
@@ -932,7 +976,7 @@ export function Workpane({
               ))}
             </dl>
             <h3>知识库原始证据</h3>
-            {detail.evidence.map((e, index) => {
+            {assessmentEvidence(detail).map((e, index) => {
               const snap = workspace.snapshots.find(
                 (s) => s.id === e.snapshotId,
               );
@@ -965,6 +1009,7 @@ export function Workpane({
       </Drawer>
       <Modal
         title="人工复核"
+        width={820}
         open={editing}
         onCancel={() => setEditing(false)}
         onOk={() => void saveReview()}
@@ -973,6 +1018,14 @@ export function Workpane({
       >
         <Alert type="info" message="人工确认结果将锁定，Agent 不会覆盖。" />
         <Form form={form} layout="vertical">
+          <VerificationFields
+            requirement={requirements.find(
+              (r) => r.id === detail?.requirementId,
+            )}
+            snapshots={workspace.snapshots}
+            selected={workspace.productScope.selected}
+            searchTrace={workspace.searchTrace}
+          />
           <Form.Item name="level" label="匹配结论" rules={[{ required: true }]}>
             <Select
               options={Object.entries(levels).map(([value, l]) => ({

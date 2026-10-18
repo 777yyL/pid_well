@@ -1,5 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { AppError } from "./errors.js";
+import type { AssessmentInput } from "../shared/domain.js";
 
 export interface SaleEntity {
   title: string;
@@ -159,6 +160,9 @@ export interface SalePage {
   hash: string;
 }
 export interface SaleMatch {
+  existingAuthorization?: boolean;
+  level?: AssessmentInput["level"];
+  verification?: AssessmentInput["verification"];
   sales: string[];
   product: string;
   version: string;
@@ -166,9 +170,29 @@ export interface SaleMatch {
   evidence: { snapshotId: string }[];
 }
 export function collectSales(rows: SaleMatch[], pages: SalePage[]) {
+  rows = rows.flatMap((row) => {
+    if (row.level === "unknown" || row.level === "no_match") return [];
+    if (!row.verification) return [row];
+    return row.verification.contributions
+      .filter((c) => ["purchase", "dependency", "existing"].includes(c.purpose))
+      .map((c) => ({
+        ...row,
+        existingAuthorization: c.purpose === "existing",
+        verification: undefined,
+        sales: [c.sales],
+        product: c.product,
+        version: c.version,
+        evidence: c.evidence,
+      }));
+  });
   const records = new Map<
     string,
-    { entity: SaleEntity; page: SalePage; requirements: Set<string> }
+    {
+      entity: SaleEntity;
+      page: SalePage;
+      requirements: Set<string>;
+      existingAuthorization?: boolean;
+    }
   >();
   for (const row of rows)
     for (const name of row.sales) {
@@ -177,14 +201,13 @@ export function collectSales(rows: SaleMatch[], pages: SalePage[]) {
         .filter((p) => ids.has(p.id))
         .map((page) => ({ page, entity: parseSaleEntity(page.content) }))
         .filter((c) => c.entity.title === name);
-      if (candidates.length > 1)
-        candidates = candidates.filter(
-          (c) =>
-            (!row.version ||
-              c.entity.version.replace(/^v/, "") ===
-                row.version.replace(/^v/, "")) &&
-            (!row.product || c.entity.product === row.product),
-        );
+      candidates = candidates.filter(
+        (c) =>
+          (!row.version ||
+            c.entity.version.replace(/^v/i, "") ===
+              row.version.replace(/^v/i, "")) &&
+          (!row.product || c.entity.product === row.product),
+      );
       if (candidates.length !== 1)
         throw new AppError(
           409,
@@ -205,12 +228,15 @@ export function collectSales(rows: SaleMatch[], pages: SalePage[]) {
           409,
           `销售项 ${name} 的实体版本存在冲突，请统一证据`,
         );
-      if (prior) prior.requirements.add(row.requirementId);
-      else
+      if (prior) {
+        prior.requirements.add(row.requirementId);
+        prior.existingAuthorization ||= row.existingAuthorization;
+      } else
         records.set(key, {
           page,
           entity,
           requirements: new Set([row.requirementId]),
+          existingAuthorization: row.existingAuthorization,
         });
     }
   const missing = [
@@ -240,5 +266,5 @@ export function collectSales(rows: SaleMatch[], pages: SalePage[]) {
       409,
       `销售项实体声明的交付依赖尚未列入清单：${missing.join("、")}，请补充匹配与证据`,
     );
-  return [...records.values()];
+  return [...records.values()].filter((r) => !r.existingAuthorization);
 }

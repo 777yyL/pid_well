@@ -105,6 +105,9 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS result_shares (id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id),created_by uuid NOT NULL REFERENCES users(id),token_hash text UNIQUE NOT NULL,token_cipher text NOT NULL,snapshot jsonb NOT NULL,artifact_ids uuid[] NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),expires_at timestamptz NOT NULL,revoked_at timestamptz)`,
   `CREATE INDEX IF NOT EXISTS result_shares_project ON result_shares(project_id,created_at DESC)`,
   `ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at timestamptz`,
+  `CREATE TABLE IF NOT EXISTS capability_sessions (id uuid PRIMARY KEY,user_id uuid NOT NULL REFERENCES users(id),wiki_project_id text NOT NULL,source_project_id uuid REFERENCES projects(id) ON DELETE CASCADE,title text NOT NULL,status text NOT NULL DEFAULT 'idle',data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE INDEX IF NOT EXISTS capability_sessions_user ON capability_sessions(user_id,updated_at DESC)`,
+  `CREATE TABLE IF NOT EXISTS capability_pages (id uuid PRIMARY KEY,session_id uuid NOT NULL REFERENCES capability_sessions(id) ON DELETE CASCADE,turn_id uuid NOT NULL,path text NOT NULL,content text NOT NULL,hash text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(session_id,path,hash))`,
 ];
 export async function migrate(db: Database) {
   await db.transaction(async (tx) => {
@@ -134,8 +137,9 @@ export async function audit(
   action: string,
   data: unknown,
 ) {
-  await db.query(
-    "INSERT INTO audit_log(project_id,user_id,run_id,action,data) VALUES($1,$2,$3,$4,$5)",
+  const [row] = await db.query<{ id: number }>(
+    "INSERT INTO audit_log(project_id,user_id,run_id,action,data) VALUES($1,$2,$3,$4,$5) RETURNING id",
     [projectId, userId, runId, action, JSON.stringify(data)],
   );
+  return row.id;
 }

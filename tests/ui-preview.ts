@@ -358,6 +358,215 @@ if (process.env.QA_ACTIVITY === "true") {
   await heartbeat();
   qaActivityTimer = setInterval(() => void heartbeat().catch(() => {}), 5000);
 }
+if (process.env.QA_ACCURACY === "true") {
+  const documentId = randomUUID();
+  await db.query(
+    "INSERT INTO documents(id,project_id,name,storage_name,hash,status,lines) VALUES($1,$2,'准确性验收.txt','qa-only','qa-only','ready',$3)",
+    [documentId, projectId, JSON.stringify(["支持人脸通行", "支持事件查询"])],
+  );
+  const product = {
+    name: "验收产品",
+    version: "v1",
+    path: "wiki/entities/products/accuracy-qa.md",
+  };
+  await snapshotPage(
+    db,
+    projectId,
+    product.path,
+    "---\ntype: product\ntitle: 验收产品\nversion: v1\n---\n[门禁](../sale-items/accuracy-qa.md)",
+  );
+  const sale = await snapshotPage(
+    db,
+    projectId,
+    "wiki/entities/sale-items/accuracy-qa.md",
+    "---\ntitle: 门禁管理\nproduct: 验收产品\nversion: v1\nmodule_id: ACS\n---\n支持人脸通行",
+  );
+  await db.query(
+    "INSERT INTO product_scopes(project_id,status,selected) VALUES($1,'confirmed',$2)",
+    [projectId, JSON.stringify([product])],
+  );
+  const proof = {
+    snapshotId: sale.id,
+    lineStart: 7,
+    lineEnd: 7,
+    quote: "支持人脸通行",
+  };
+  for (const [i, raw] of ["支持人脸通行", "支持事件查询"].entries()) {
+    const id = `T-${i + 1}`;
+    const sub = {
+      id: `${id}.1`,
+      raw,
+      required: true,
+      lineStart: i + 1,
+      lineEnd: i + 1,
+    };
+    await db.query(
+      "INSERT INTO requirements(id,project_id,data,confirmed) VALUES($1,$2,$3,true)",
+      [
+        id,
+        projectId,
+        JSON.stringify({
+          id,
+          documentId,
+          module: "门禁",
+          type: "功能",
+          raw,
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          ...(i === 0 ? { subrequirements: [sub] } : {}),
+        }),
+      ],
+    );
+    if (i === 0)
+      await db.query(
+        "INSERT INTO assessments(id,project_id,requirement_id,data,source,reviewed) VALUES($1,$2,$3,$4,'agent',false)",
+        [
+          randomUUID(),
+          projectId,
+          id,
+          JSON.stringify({
+            requirementId: id,
+            product: product.name,
+            version: "v1",
+            level: "exact",
+            sales: ["门禁管理"],
+            ok: [raw],
+            hard: [],
+            no: [],
+            note: "隔离测试：验证表单保存",
+            criteria: {
+              direction: "输入",
+              scope: "人脸通行",
+              spec: "无数值要求",
+              context: "园区",
+              delivery: "原生",
+            },
+            evidence: [proof],
+            dependencies: [],
+            mustSelect: [],
+            verification: {
+              version: 2,
+              checks: [
+                {
+                  subrequirementId: sub.id,
+                  level: "exact",
+                  direction: "人员通行",
+                  reason: "原文明确支持",
+                  delivery: "native",
+                  deliveryConfirmed: true,
+                  evidence: [proof],
+                },
+              ],
+              contributions: [
+                {
+                  id: "C1",
+                  product: product.name,
+                  version: "v1",
+                  sales: "门禁管理",
+                  path: sale.path,
+                  moduleId: "ACS",
+                  capability: raw,
+                  subrequirementIds: [sub.id],
+                  purpose: "purchase",
+                  reason: "直接满足",
+                  evidence: [proof],
+                },
+              ],
+              integrationRequired: false,
+              integrations: [],
+              supplementalSearch: [],
+              counterchecks: {
+                direction: "一致",
+                omissions: "无",
+                quantitative: "无",
+                external: "无",
+                integration: "单产品",
+              },
+            },
+          }),
+        ],
+      );
+  }
+}
+if (process.env.QA_CAPABILITY === "true") {
+  const Fastify = (await import("fastify")).default;
+  const { saveSettings } = await import("../server/settings.js");
+  const fixture = Fastify();
+  const salePath = "wiki/entities/sale-items/demo-acs.md";
+  const pages: Record<string, string> = {
+    "wiki/overview.md":
+      "产品标识 Demo · 产品名称 综合安防平台 · 所属部门 软件产品部 · 维护人 验收负责人 产品描述 门禁能力验收",
+    "wiki/entities/products/demo.md":
+      "---\ntitle: Demo\nversion: v1\n---\n[门禁管理](../sale-items/demo-acs.md)",
+    [salePath]:
+      "---\ntitle: 门禁管理\nproduct: Demo\nversion: v1\nmodule_id: ACS\nunit: 套\nfixed_price: 5000\n---\n支持多门互锁\n## 技术规格\n单控制器最多4门互锁，跨控制器容量待确认。",
+  };
+  fixture.get("/api/v1/projects", () => ({
+    projects: [{ id: "qa-capability", name: "能力检索演示知识库（隔离）" }],
+  }));
+  fixture.get("/api/v1/projects/:id/files", () => ({
+    truncated: false,
+    files: Object.keys(pages).map((path) => ({ path: "//?/D:/qa/" + path })),
+  }));
+  fixture.get("/api/v1/projects/:id/files/content", async (request, reply) => {
+    const path = (request.query as { path: string }).path;
+    return pages[path] ? { content: pages[path] } : reply.code(404).send({});
+  });
+  fixture.post("/api/v1/projects/:id/search", () => ({
+    results: [{ path: salePath }],
+  }));
+  fixture.post("/v1/chat/completions", async (request, reply) => {
+    const body = request.body as { messages: { content: string }[] };
+    const input = JSON.parse(body.messages.at(-1)!.content);
+    const requirements = ["多门互锁", "跨控制器128门"];
+    const result = input.candidates
+      ? {
+          results: [
+            {
+              path: salePath,
+              checks: input.requirements.map(
+                (requirement: string, i: number) => ({
+                  requirement,
+                  status: i === 0 ? "supported" : "unknown",
+                  reason:
+                    i === 0
+                      ? "销售项原文提供多门互锁"
+                      : "知识库仅说明单控制器4门，不能推断跨控制器128门容量",
+                  delivery: i === 0 ? "native" : "unknown",
+                  evidence:
+                    i === 0
+                      ? [{ lineStart: 9, lineEnd: 9, quote: "支持多门互锁" }]
+                      : [],
+                }),
+              ),
+            },
+          ],
+        }
+      : { requirements, queries: ["多门互锁"] };
+    reply.hijack();
+    reply.raw.writeHead(200, { "Content-Type": "text/event-stream" });
+    reply.raw.write(
+      `data: ${JSON.stringify({ id: "qa", object: "chat.completion.chunk", created: 1, model: "qa", choices: [{ index: 0, delta: { role: "assistant", content: JSON.stringify(result) }, finish_reason: null }] })}\n\n`,
+    );
+    reply.raw.write(
+      `data: ${JSON.stringify({ id: "qa", object: "chat.completion.chunk", created: 1, model: "qa", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`,
+    );
+    reply.raw.end("data: [DONE]\n\n");
+  });
+  await fixture.listen({ host: "127.0.0.1", port: 0 });
+  const fixturePort = (fixture.server.address() as { port: number }).port;
+  await saveSettings(db, {
+    wikiBaseUrl: `http://127.0.0.1:${fixturePort}`,
+    modelBaseUrl: `http://127.0.0.1:${fixturePort}/v1`,
+    model: "isolated-capability",
+    modelApiKey: "qa-only",
+  });
+  await db.query(
+    "UPDATE projects SET wiki_project_id='qa-capability',name='能力检索验收（隔离数据）' WHERE id=$1",
+    [projectId],
+  );
+  app.addHook("onClose", () => fixture.close());
+}
 await app.listen({
   host: process.env.QA_HOST ?? "127.0.0.1",
   port: Number(process.env.QA_PORT ?? 4321),

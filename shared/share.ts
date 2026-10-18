@@ -18,6 +18,7 @@ export interface SharedAssessment extends Pick<
   | "source"
   | "revision"
 > {
+  accuracySummary?: string;
   evidence: {
     quote: string;
     path: string;
@@ -26,6 +27,7 @@ export interface SharedAssessment extends Pick<
   }[];
 }
 export interface SharedResult {
+  sourceCoverage?: { name: string; status: string; uncheckedLines: number[] }[];
   projectName: string;
   generatedAt: string;
   strategy: string;

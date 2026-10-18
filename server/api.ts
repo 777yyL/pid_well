@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { basename, extname, resolve } from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { z } from "zod";
+import { saveCoverage, sourceCoverage } from "./source-coverage.js";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import {
@@ -20,7 +21,11 @@ import { AppError } from "./errors.js";
 import { settingsView, saveSettings, loadSettings } from "./settings.js";
 import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { parseDocument, supportedExtensions } from "./documents.js";
-import { assessmentRows, saveAssessments } from "./assessment.js";
+import {
+  assessmentRows,
+  saveAssessments,
+  supplementSubrequirements,
+} from "./assessment.js";
 import { assessmentSchema, type User, type Run } from "../shared/domain.js";
 import { createReport } from "./reports.js";
 import { AgentRunner, compatibleModel, publicModelError } from "./agent.js";
@@ -319,6 +324,7 @@ export function routes(
         confirmed: r.confirmed,
       })),
       assessments: await assessmentRows(db, id),
+      sourceCoverage: await sourceCoverage(db, id),
       snapshots,
       runs,
       artifacts,
@@ -594,6 +600,30 @@ export function routes(
       await audit(tx, id, user.id, null, "requirements_confirmed", { ids });
     });
     return { ok: true };
+  });
+  app.put(
+    "/api/projects/:id/requirements/:requirementId/subrequirements",
+    async (request) => {
+      const user = requireUser(request),
+        id = param(request, "id");
+      await accessProject(db, user, id);
+      return supplementSubrequirements(
+        db,
+        id,
+        z
+          .string()
+          .regex(/^T-\d+$/)
+          .parse((request.params as Record<string, string>).requirementId),
+        user.id,
+        request.body,
+      );
+    },
+  );
+  app.put("/api/projects/:id/source-coverage", async (request) => {
+    const user = requireUser(request),
+      id = param(request, "id");
+    await accessProject(db, user, id);
+    return saveCoverage(db, id, request.body, { userId: user.id });
   });
   app.put("/api/projects/:id/assessments/:requirementId", async (request) => {
     const user = requireUser(request);

@@ -10,6 +10,7 @@ import { config, seal, unseal } from "./config.js";
 import { AppError } from "./errors.js";
 import { captureReport, createReport } from "./reports.js";
 import { collectSales } from "./sale-entity.js";
+import { accuracySummary, assessmentEvidence } from "../shared/accuracy.js";
 import type { SharedResult } from "../shared/share.js";
 const hashToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
@@ -69,6 +70,7 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
       projectName: frozen.project.name,
       generatedAt: frozen.generatedAt,
       strategy: frozen.scope.strategy,
+      sourceCoverage: frozen.sourceCoverage,
       expiresAt,
       files,
       rows: frozen.rows.map((row) => ({
@@ -83,12 +85,13 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
         hard: row.hard,
         no: row.no,
         note: row.note,
+        accuracySummary: accuracySummary(row),
         criteria: row.criteria,
         dependencies: row.dependencies,
         mustSelect: row.mustSelect,
         source: row.source,
         revision: row.revision,
-        evidence: row.evidence.map((proof) => ({
+        evidence: assessmentEvidence(row).map((proof) => ({
           quote: proof.quote,
           lineStart: proof.lineStart,
           lineEnd: proof.lineEnd,

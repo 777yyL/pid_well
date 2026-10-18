@@ -4,13 +4,22 @@ import { AppError } from "./errors.js";
 import {
   assessmentSchema,
   requirementSchema,
+  subRequirementSchema,
   type AssessmentInput,
   type RequirementInput,
 } from "../shared/domain.js";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { isDeepStrictEqual } from "node:util";
 import { parseSaleEntity } from "./sale-entity.js";
 import { enforceProductScope } from "./product-scope.js";
+import {
+  aggregateVerdict,
+  selectedContributions,
+  assessmentEvidence,
+} from "../shared/accuracy.js";
+import { validateCatalogSale, resolveProductPage } from "./product-search.js";
+import { productScope } from "./product-scope.js";
 export function checkOriginal(requirement: RequirementInput, lines: string[]) {
   if (
     requirement.lineEnd < requirement.lineStart ||
@@ -40,6 +49,22 @@ export async function saveRequirements(
       );
       if (!doc) throw new AppError(422, "要求必须来自本项目已解析的文档");
       checkOriginal(item, doc.lines);
+      if (item.subrequirements) {
+        if (
+          new Set(item.subrequirements.map((s) => s.id)).size !==
+          item.subrequirements.length
+        )
+          throw new AppError(422, "子要求编号不能重复");
+        for (const sub of item.subrequirements) {
+          if (
+            sub.lineStart < item.lineStart ||
+            sub.lineEnd > item.lineEnd ||
+            !item.raw.includes(sub.raw)
+          )
+            throw new AppError(422, "子要求必须逐字定位父条款原文");
+          checkOriginal({ ...item, ...sub }, doc.lines);
+        }
+      }
       const [existing] = await tx.query<{
         data: RequirementInput;
         confirmed: boolean;
@@ -63,12 +88,91 @@ export async function saveRequirements(
   });
   return { count: items.length, requiresConfirmation: true };
 }
+export const supplementSchema = z.object({
+  expectedSubrequirements: z.array(subRequirementSchema).nullable(),
+  subrequirements: z.array(subRequirementSchema).min(1).max(100),
+});
+export async function supplementSubrequirements(
+  db: Database,
+  projectId: string,
+  requirementId: string,
+  userId: string,
+  input: unknown,
+) {
+  const value = supplementSchema.parse(input);
+  return db.transaction(async (tx) => {
+    const [row] = await tx.query<{
+      data: RequirementInput;
+      confirmed: boolean;
+    }>(
+      "SELECT data,confirmed FROM requirements WHERE project_id=$1 AND id=$2 FOR UPDATE",
+      [projectId, requirementId],
+    );
+    if (!row?.confirmed) throw new AppError(409, "请先确认父条款原文");
+    if (
+      !isDeepStrictEqual(
+        row.data.subrequirements ?? null,
+        value.expectedSubrequirements,
+      )
+    )
+      throw new AppError(409, "子要求已更新，请刷新后重新核对");
+    if (
+      row.data.subrequirements?.length &&
+      !isDeepStrictEqual(row.data.subrequirements, value.subrequirements)
+    )
+      throw new AppError(
+        409,
+        "已确认子要求不能替换；补全入口仅用于缺少子要求的历史条款",
+      );
+    if (
+      new Set(value.subrequirements.map((s) => s.id)).size !==
+      value.subrequirements.length
+    )
+      throw new AppError(422, "子要求编号不能重复");
+    const [doc] = await tx.query<{ lines: string[] }>(
+      "SELECT lines FROM documents WHERE project_id=$1 AND id=$2 AND status='ready'",
+      [projectId, row.data.documentId],
+    );
+    if (!doc) throw new AppError(422, "父条款原文文档不可用");
+    for (const sub of value.subrequirements) {
+      if (
+        sub.lineStart < row.data.lineStart ||
+        sub.lineEnd > row.data.lineEnd ||
+        !row.data.raw.includes(sub.raw)
+      )
+        throw new AppError(422, "子要求必须逐字定位父条款原文");
+      checkOriginal({ ...row.data, ...sub }, doc.lines);
+    }
+    const updated = { ...row.data, subrequirements: value.subrequirements };
+    await tx.query(
+      "UPDATE requirements SET data=$1 WHERE project_id=$2 AND id=$3",
+      [JSON.stringify(updated), projectId, requirementId],
+    );
+    await audit(
+      tx,
+      projectId,
+      userId,
+      null,
+      "subrequirements_human_confirmed",
+      {
+        requirementId,
+        before: row.data.subrequirements ?? null,
+        after: value.subrequirements,
+        assessmentPreserved: true,
+      },
+    );
+    return { ...updated, confirmed: row.confirmed };
+  });
+}
 export function checkVerdict(item: AssessmentInput) {
   if (
     item.level === "exact" &&
     (item.no.length ||
       item.hard.length ||
-      !item.sales.length ||
+      (!item.sales.length &&
+        !item.verification?.contributions.some(
+          (c) => c.purpose === "existing",
+        )) ||
       !item.evidence.length)
   )
     throw new AppError(
@@ -76,14 +180,218 @@ export function checkVerdict(item: AssessmentInput) {
       "完全满足必须有销售项和证据，且不能有不满足或需定制的能力",
     );
   if (
-    item.level !== "no_match" &&
-    (!item.sales.length || !item.evidence.length)
+    ["exact", "partial"].includes(item.level) &&
+    ((!item.sales.length &&
+      !item.verification?.contributions.some(
+        (c) => c.purpose === "existing",
+      )) ||
+      !item.evidence.length)
   )
     throw new AppError(422, "匹配结论必须有销售项和原始知识库证据");
   if (item.level === "partial" && !item.hard.length && !item.no.length)
     throw new AppError(422, "部分满足必须列出具体缺口");
-  if (item.level === "no_match" && !item.no.length)
-    throw new AppError(422, "不满足必须列出不具备的能力");
+  if (item.level === "no_match" && (!item.no.length || !item.evidence.length))
+    throw new AppError(422, "不满足必须列出明确反向证据，资料缺失应为待确认");
+}
+export async function validateVerification(
+  db: Database,
+  projectId: string,
+  item: AssessmentInput,
+  requirement: RequirementInput,
+) {
+  const v = item.verification;
+  if (!v) {
+    throw new AppError(
+      422,
+      "新评估必须提供新版逐子要求核验与证据覆盖，历史结果可保留人工修订",
+    );
+  }
+  const subs = requirement.subrequirements;
+  if (!subs?.length) throw new AppError(422, "请先抽取并确认可核验子要求");
+  if (
+    new Set(v.checks.map((c) => c.subrequirementId)).size !== v.checks.length ||
+    v.checks.length !== subs.length ||
+    subs.some((s) => !v.checks.some((c) => c.subrequirementId === s.id))
+  )
+    throw new AppError(422, "核验必须逐一覆盖全部子要求且编号唯一");
+  if (new Set(v.contributions.map((c) => c.id)).size !== v.contributions.length)
+    throw new AppError(422, "贡献项编号不能重复");
+  const scope = await productScope(db, projectId);
+  const entities = new Map<string, ReturnType<typeof parseSaleEntity>>();
+  for (const c of v.contributions) {
+    const selected = scope.selected.find(
+      (p) =>
+        p.name === c.product &&
+        p.version.replace(/^v/i, "") === c.version.replace(/^v/i, ""),
+    );
+    if (!selected) throw new AppError(422, "贡献项产品/版本不在确认范围");
+    const root = await resolveProductPage(db, projectId, selected);
+    if (!root) throw new AppError(422, "贡献项产品页尚未读取");
+    if (c.subrequirementIds.some((id) => !subs.some((s) => s.id === id)))
+      throw new AppError(422, "贡献项关联了未知子要求");
+    let found = false;
+    for (const e of c.evidence) {
+      const [page] = await db.query<{
+        id: string;
+        path: string;
+        content: string;
+      }>(
+        "SELECT id,path,content FROM snapshots WHERE project_id=$1 AND id=$2",
+        [projectId, e.snapshotId],
+      );
+      if (page?.path === c.path) {
+        const entity = parseSaleEntity(page.content);
+        entities.set(c.id, entity);
+        if (entity.title !== c.sales || entity.moduleId !== c.moduleId)
+          throw new AppError(422, "贡献项标识与实体不一致");
+        await validateCatalogSale(
+          db,
+          projectId,
+          { ...selected, path: root.path },
+          page,
+          c.version,
+        );
+        found = true;
+      }
+    }
+    if (!found) throw new AppError(422, "贡献项必须引用指定正式实体页");
+  }
+  for (const c of v.contributions.filter((c) => c.purpose === "dependency")) {
+    const entity = entities.get(c.id)!;
+    if (
+      !/^(?:是|true|必选)$/i.test(entity.mandatory) &&
+      !v.contributions.some(
+        (other) =>
+          other.id !== c.id &&
+          ["purchase", "dependency", "existing"].includes(other.purpose) &&
+          other.product === c.product &&
+          other.version === c.version &&
+          entities
+            .get(other.id)
+            ?.dependencies.some((d) =>
+              [
+                c.sales,
+                c.moduleId,
+                c.path,
+                c.path.replace(/\.md$/, ""),
+                c.path.split("/").at(-1)?.replace(/\.md$/, ""),
+              ].includes(d),
+            ),
+      )
+    )
+      throw new AppError(422, "正式依赖必须由选用实体的依赖关系或必选声明支持");
+  }
+  for (const check of v.checks) {
+    const required = subs.find(
+      (s) => s.id === check.subrequirementId,
+    )!.required;
+    if (["exact", "no_match"].includes(check.level) && !check.evidence.length)
+      throw new AppError(422, "明确结论需要逐子要求证据");
+    if (
+      check.level === "exact" &&
+      !v.contributions.some(
+        (c) =>
+          (!required ||
+            (c.purpose !== "candidate" && c.purpose !== "optional")) &&
+          c.subrequirementIds.includes(check.subrequirementId),
+      )
+    )
+      throw new AppError(422, "满足的子要求缺少选用贡献项");
+    for (const e of check.evidence) {
+      if (
+        ["exact", "no_match"].includes(check.level) &&
+        !v.contributions.some(
+          (c) =>
+            (check.level !== "exact" ||
+              !required ||
+              (c.purpose !== "candidate" && c.purpose !== "optional")) &&
+            c.subrequirementIds.includes(check.subrequirementId) &&
+            c.evidence.some((proof) => proof.snapshotId === e.snapshotId),
+        )
+      )
+        throw new AppError(
+          422,
+          "明确子要求证据必须来自范围内关联贡献项，满足项不得仅引用候选",
+        );
+      const [page] = await db.query<{ content: string }>(
+        "SELECT content FROM snapshots WHERE project_id=$1 AND id=$2",
+        [projectId, e.snapshotId],
+      );
+      if (check.level === "exact" && page) {
+        const front = page.content.match(/^---\r?\n[\s\S]*?\r?\n---/);
+        const frontLines = front?.[0].split(/\r?\n/).length ?? 0;
+        const bodyQuote = e.quote
+          .split(/\r?\n/)
+          .filter((s) => s.trim() && !/^\s*#/.test(s));
+        const capabilitySpan = page.content
+          .split(/\r?\n/)
+          .slice(Math.max(frontLines, e.lineStart - 1), e.lineEnd)
+          .join("\n");
+        if (
+          !capabilitySpan.includes(e.quote) ||
+          !bodyQuote.length ||
+          e.quote.trim() === parseSaleEntity(page.content).title
+        )
+          throw new AppError(422, "标题或元数据不能替代能力证据");
+      }
+    }
+    if (["unknown", "no_match"].includes(check.level)) {
+      const search = v.supplementalSearch.find(
+        (s) => s.subrequirementId === check.subrequirementId,
+      );
+      if (!search)
+        throw new AppError(422, "待确认/不满足子要求必须补充检索并记录轨迹");
+      const [trace] = await db.query<{
+        data: {
+          requirementId: string;
+          subrequirementId?: string;
+          query: string;
+          scopeRevision: number;
+        };
+      }>(
+        "SELECT data FROM audit_log WHERE project_id=$1 AND id=$2 AND action IN ('product_scoped_search','product_global_search')",
+        [projectId, search.traceId],
+      );
+      if (
+        !trace ||
+        trace.data.requirementId !== item.requirementId ||
+        trace.data.subrequirementId !== check.subrequirementId ||
+        trace.data.query !== search.query ||
+        trace.data.scopeRevision !== scope.revision
+      )
+        throw new AppError(
+          422,
+          "补充检索轨迹不存在、范围已变化或父/子条款不一致",
+        );
+    }
+  }
+  for (const i of v.integrations)
+    if (
+      !v.contributions.some((c) => c.id === i.from) ||
+      !v.contributions.some((c) => c.id === i.to) ||
+      i.from === i.to
+    )
+      throw new AppError(422, "联动必须关联不同贡献项");
+  if (
+    new Set(
+      v.contributions
+        .filter((c) => c.purpose !== "candidate" && c.purpose !== "optional")
+        .map((c) => c.product),
+    ).size > 1 &&
+    !v.integrationRequired
+  )
+    throw new AppError(422, "跨产品组合必须显式核验联动条件");
+  if (aggregateVerdict(item, requirement) !== item.level)
+    throw new AppError(422, "顶层结论与必需子要求/交付/集成条件不一致");
+  const names = selectedContributions(item).map((c) => c.sales);
+  if (
+    item.sales.some((s) => !names.includes(s)) ||
+    names.some((s) => !item.sales.includes(s))
+  )
+    throw new AppError(
+      422,
+      "sales 只能列最终采购或正式依赖，候选/已有授权/可选增强须单列",
+    );
 }
 export async function validateEvidence(
   db: Database,
@@ -91,7 +399,8 @@ export async function validateEvidence(
   item: AssessmentInput,
 ) {
   const salesTitles = new Set<string>();
-  for (const evidence of item.evidence) {
+  const allEvidence = assessmentEvidence(item);
+  for (const evidence of allEvidence) {
     const [snapshot] = await db.query<{ content: string; path: string }>(
       "SELECT content,path FROM snapshots WHERE id=$1 AND project_id=$2",
       [evidence.snapshotId, projectId],
@@ -144,8 +453,11 @@ export async function saveAssessments(
       checkVerdict(item);
       const scopeRevision = await enforceProductScope(tx, projectId, item);
       if (scopeRevision) item.productScopeRevision = scopeRevision;
-      const [requirement] = await tx.query<{ confirmed: boolean }>(
-        "SELECT confirmed FROM requirements WHERE project_id=$1 AND id=$2",
+      const [requirement] = await tx.query<{
+        confirmed: boolean;
+        data: RequirementInput;
+      }>(
+        "SELECT confirmed,data FROM requirements WHERE project_id=$1 AND id=$2",
         [projectId, item.requirementId],
       );
       if (!requirement) throw new AppError(422, "要求编号不存在");
@@ -165,6 +477,14 @@ export async function saveAssessments(
           409,
           "人工确认结果不可被 Agent 覆盖；请向用户说明新的发现",
         );
+      // Historical human records remain editable without pretending they acquired v2 verification.
+      if (!(
+        actor.human &&
+        previous &&
+        !previous.data.verification &&
+        !item.verification
+      ))
+        await validateVerification(tx, projectId, item, requirement.data);
       const [saved] = await tx.query<{ revision: number }>(
         `INSERT INTO assessments(id,project_id,requirement_id,data,source,reviewed) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,requirement_id) DO UPDATE SET data=EXCLUDED.data,source=EXCLUDED.source,reviewed=EXCLUDED.reviewed,revision=assessments.revision+1,updated_at=now() WHERE assessments.source<>'human' OR EXCLUDED.source='human' RETURNING revision`,
         [

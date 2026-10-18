@@ -306,7 +306,7 @@ export async function enforceProductScope(
       422,
       "必须先读取并核实所选产品页；自定义产品名称无法定位时，请补充准确的知识库产品路径",
     );
-  for (const e of item.evidence) {
+  for (const e of item.verification ? [] : item.evidence) {
     const [page] = await db.query<{
       id: string;
       path: string;

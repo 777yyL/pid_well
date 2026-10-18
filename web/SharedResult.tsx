@@ -1,3 +1,4 @@
+import { coverageLabel } from "../shared/accuracy";
 import { useEffect, useState } from "react";
 import { KnowledgeMarkdown } from "./KnowledgeReader";
 import {
@@ -22,6 +23,7 @@ const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
   no_match: { label: "不满足", color: "error" },
+  unknown: { label: "待确认", color: "processing" },
 };
 const criteriaNames: Record<string, string> = {
   direction: "能力方向",
@@ -43,6 +45,10 @@ function Detail({ row }: { row: SharedAssessment }) {
       </p>
       <h3>结论说明</h3>
       <p>{row.note}</p>
+      <h3>子要求、组合与风险核验</h3>
+      <p style={{ whiteSpace: "pre-wrap" }}>
+        {row.accuracySummary || "历史结果：未按新版逐子要求核验"}
+      </p>
       <div className="shared-findings">
         {(["ok", "hard", "no"] as const).map((key) => (
           <section className={`assessment-finding ${key}`} key={key}>
@@ -86,7 +92,7 @@ function Detail({ row }: { row: SharedAssessment }) {
       <p className="muted">
         交付依赖：{row.dependencies.join("、") || "未列出"} · 必选项：
         {row.mustSelect.join("、") || "未列出"} ·{" "}
-        {row.source === "human" ? "人工确认" : "AI 已复核"} · 结果版本{" "}
+        {row.source === "human" ? "人工确认" : "AI 自检完成"} · 结果版本{" "}
         {row.revision}
       </p>
     </div>
@@ -201,7 +207,16 @@ export function SharedResult({ token }: { token: string }) {
         ))}
       </section>
       <p className="shared-meta">
-        全部条款已确认并复核。此链接固定分享时的结果；数量与授权范围仍需销售核定。
+        处理完成；AI
+        自检与人工确认见逐条来源。此链接固定分享时结果；数量与授权范围待核定。
+        原文覆盖：
+        {result.sourceCoverage
+          ?.map(
+            (d) =>
+              `${d.name} ${coverageLabel(d.status)}，未检查 ${d.uncheckedLines.length} 行`,
+          )
+          .join("；") || "待检查"}
+        。未知项不计为满足。
       </p>
       {result.strategy && (
         <section className="shared-strategy">

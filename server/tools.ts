@@ -20,6 +20,7 @@ import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { numberedLines } from "./documents.js";
 import { createReport } from "./reports.js";
 import { AppError } from "./errors.js";
+import { coverageSchema, saveCoverage } from "./source-coverage.js";
 import {
   productScope,
   recommendProducts,
@@ -297,6 +298,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       "产品内检索销售项",
       "确认产品后仅检索已选产品目录内的正式销售项，必须提供已确认 requirementId。先完整读取 wiki_product_catalog。可更换关键词多次查询；不会自动全局搜索。未选产品阶段仅用于核实产品身份。",
       z.object({
+        subrequirementId: z.string().min(1).optional(),
         requirementId: z
           .string()
           .regex(/^T-\d+$/)
@@ -320,6 +322,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             args.query,
             args.topK,
             signal,
+            args.subrequirementId,
           );
         }
         const [p] = await db.query<{ wiki_project_id: string }>(
@@ -442,7 +445,17 @@ export function createTools(ctx: ToolContext): AgentTool[] {
               requirementId: z.string(),
               revision: z.number().int().positive(),
               checks: criteriaSchema,
-              coverageConfirmed: z.literal(true),
+              coverageConfirmed: z.literal(true).optional(),
+              points: z
+                .array(
+                  z.object({
+                    subrequirementId: z.string().min(1),
+                    evidenceIndexes: z.array(z.number().int().min(0)),
+                    gap: z.string(),
+                    explanation: z.string().min(1),
+                  }),
+                )
+                .optional(),
               reason: z.string().min(10),
             }),
           )
@@ -452,8 +465,46 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       async (args) => {
         await db.transaction(async (tx) => {
           for (const review of args.reviews) {
+            const [currentAssessment] = await assessmentRows(
+              tx,
+              projectId,
+              1,
+              0,
+              { ids: [review.requirementId] },
+            );
+            if (currentAssessment?.verification) {
+              const checks = currentAssessment.verification.checks;
+              if (
+                !review.points ||
+                new Set(review.points.map((p) => p.subrequirementId)).size !==
+                  checks.length ||
+                review.points.length !== checks.length ||
+                checks.some(
+                  (c) =>
+                    !review.points!.some(
+                      (p) => p.subrequirementId === c.subrequirementId,
+                    ),
+                )
+              )
+                throw new AppError(
+                  422,
+                  "AI 自检必须逐子要求指出证据或缺口，不能仅声明 coverageConfirmed",
+                );
+              for (const point of review.points) {
+                const check = checks.find(
+                  (c) => c.subrequirementId === point.subrequirementId,
+                )!;
+                if (
+                  (!point.evidenceIndexes.length && !point.gap.trim()) ||
+                  point.evidenceIndexes.some((i) => !check.evidence[i])
+                )
+                  throw new AppError(422, "自检引用不存在或未说明缺口");
+                if (check.level === "exact" && !point.evidenceIndexes.length)
+                  throw new AppError(422, "满足的子要求必须逐项引用证据自检");
+              }
+            }
             const [row] = await tx.query(
-              "UPDATE assessments SET reviewed=true WHERE project_id=$1 AND requirement_id=$2 AND revision=$3 RETURNING id",
+              "UPDATE assessments SET reviewed=true WHERE project_id=$1 AND requirement_id=$2 AND revision=$3 AND source<>'human' RETURNING id",
               [projectId, review.requirementId, review.revision],
             );
             if (!row) {
@@ -481,6 +532,13 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         });
         return { reviewed: args.reviews.length };
       },
+    ),
+    tool(
+      "record_source_coverage",
+      "记录原文条目覆盖",
+      "逐条记录原文已抽取、排除及理由、待检查。关联父/子要求与原文行号。未登记的非空行始终待检查；AI 检查不等于人工确认。",
+      coverageSchema,
+      (args) => saveCoverage(db, projectId, args, { runId }),
     ),
     tool(
       "record_finding",

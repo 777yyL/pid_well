@@ -1,5 +1,12 @@
 import { z } from "zod";
-export const verdict = z.enum(["exact", "partial", "no_match"]);
+export const verdict = z.enum(["exact", "partial", "no_match", "unknown"]);
+export const subRequirementSchema = z.object({
+  id: z.string().min(1),
+  raw: z.string().min(1),
+  required: z.boolean(),
+  lineStart: z.number().int().positive(),
+  lineEnd: z.number().int().positive(),
+});
 export const criteriaSchema = z.object({
   direction: z.string().min(1),
   scope: z.string().min(1),
@@ -15,12 +22,97 @@ export const requirementSchema = z.object({
   raw: z.string().min(1),
   lineStart: z.number().int().positive(),
   lineEnd: z.number().int().positive(),
+  subrequirements: z.array(subRequirementSchema).min(1).optional(),
 });
 export const evidenceSchema = z.object({
   snapshotId: z.string().uuid(),
   lineStart: z.number().int().positive(),
   lineEnd: z.number().int().positive(),
   quote: z.string().min(1),
+});
+export const verificationSchema = z.object({
+  version: z.literal(2),
+  checks: z
+    .array(
+      z.object({
+        subrequirementId: z.string().min(1),
+        level: verdict,
+        direction: z.string().min(1),
+        reason: z.string().min(1),
+        delivery: z.enum([
+          "native",
+          "configuration",
+          "integration",
+          "customization",
+          "external",
+          "unknown",
+        ]),
+        deliveryConfirmed: z.boolean(),
+        evidence: z.array(evidenceSchema),
+        quantitative: z
+          .object({
+            operator: z.enum([">=", ">", "<=", "<", "="]),
+            requiredValue: z.number(),
+            actualValue: z.number().optional(),
+            unit: z.string().min(1),
+            actualUnit: z.string().optional(),
+            condition: z.string().min(1),
+            confirmed: z.boolean(),
+          })
+          .optional(),
+      }),
+    )
+    .min(1),
+  contributions: z.array(
+    z.object({
+      id: z.string().min(1),
+      product: z.string().min(1),
+      version: z.string().min(1),
+      sales: z.string().min(1),
+      path: z.string().startsWith("wiki/"),
+      moduleId: z.string().min(1),
+      capability: z.string().min(1),
+      subrequirementIds: z.array(z.string()),
+      purpose: z.enum([
+        "purchase",
+        "dependency",
+        "existing",
+        "optional",
+        "candidate",
+      ]),
+      reason: z.string().min(1),
+      evidence: z.array(evidenceSchema).min(1),
+    }),
+  ),
+  integrationRequired: z.boolean(),
+  integrations: z.array(
+    z.object({
+      from: z.string().min(1),
+      to: z.string().min(1),
+      protocol: z.string().min(1),
+      direction: z.string().min(1),
+      compatibility: z.string().min(1),
+      configuration: z.string().min(1),
+      authorization: z.string().min(1),
+      confirmed: z.boolean(),
+      evidence: z.array(evidenceSchema),
+    }),
+  ),
+  supplementalSearch: z.array(
+    z.object({
+      subrequirementId: z.string().min(1),
+      query: z.string().min(1),
+      outcome: z.string().min(1),
+      traceId: z.number().int().positive(),
+    }),
+  ),
+  counterchecks: z.object({
+    direction: z.string().min(1),
+    omissions: z.string().min(1),
+    quantitative: z.string().min(1),
+    external: z.string().min(1),
+    integration: z.string().min(1),
+  }),
 });
 export const assessmentSchema = z.object({
   productScopeRevision: z.number().int().positive().optional(),
@@ -37,6 +129,7 @@ export const assessmentSchema = z.object({
   evidence: z.array(evidenceSchema),
   dependencies: z.array(z.string()),
   mustSelect: z.array(z.string()),
+  verification: verificationSchema.optional(),
 });
 export type RequirementInput = z.infer<typeof requirementSchema>;
 export const productChoiceSchema = z.object({
@@ -181,6 +274,21 @@ export interface ProductAlternative {
   };
 }
 export interface Workspace {
+  sourceCoverage?: {
+    documentId: string;
+    name: string;
+    status: string;
+    uncheckedLines: number[];
+    entries: {
+      id: string;
+      lineStart: number;
+      lineEnd: number;
+      status: string;
+      reason: string;
+      requirementIds: string[];
+      subrequirementIds: string[];
+    }[];
+  }[];
   alternatives: ProductAlternative[];
   searchTrace: {
     id: number;

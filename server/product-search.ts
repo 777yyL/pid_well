@@ -6,6 +6,7 @@ import { audit } from "./db.js";
 import { AppError } from "./errors.js";
 import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { parseSaleEntity } from "./sale-entity.js";
+import { retrievalTokens } from "../shared/retrieval.js";
 import { productScope } from "./product-scope.js";
 import {
   productChoiceSchema,
@@ -310,8 +311,19 @@ export async function searchSelected(
   query: string,
   topK: number,
   signal?: AbortSignal,
+  subrequirementId?: string,
 ) {
   await requireClause(db, projectId, requirementId);
+  if (subrequirementId) {
+    const [r] = await db.query<{
+      data: { subrequirements?: { id: string }[] };
+    }>("SELECT data FROM requirements WHERE project_id=$1 AND id=$2", [
+      projectId,
+      requirementId,
+    ]);
+    if (!r?.data.subrequirements?.some((s) => s.id === subrequirementId))
+      throw new AppError(422, "检索子要求不属于该父条款");
+  }
   const catalog = await selectedCatalog(db, projectId, runId, signal);
   const paths = [...new Set(catalog.products.flatMap((p) => p.paths))];
   const seen = await db.query<{ path: string }>(
@@ -328,17 +340,7 @@ export async function searchSelected(
     "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 ORDER BY path,created_at DESC",
     [projectId],
   );
-  const terms = [
-    ...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []),
-  ];
-  const tokens = terms.flatMap((t) =>
-    /[\u3400-\u9fff]/.test(t) && t.length > 2
-      ? [
-          t,
-          ...Array.from({ length: t.length - 1 }, (_, i) => t.slice(i, i + 2)),
-        ]
-      : [t],
-  );
+  const tokens = retrievalTokens(query);
   const hits = pages
     .flatMap((page) => {
       const owners = catalog.products.filter(
@@ -351,7 +353,13 @@ export async function searchSelected(
         (total, t) =>
           total +
           (text.includes(t)
-            ? (entity.title.toLowerCase().includes(t) ? 4 : 1) * t.length
+            ? (entity.title.toLowerCase().includes(t)
+                ? 4
+                : entity.specification.toLowerCase().includes(t)
+                  ? 3
+                  : entity.description.toLowerCase().includes(t)
+                    ? 2
+                    : 1) * t.length
             : 0),
         0,
       );
@@ -368,16 +376,26 @@ export async function searchSelected(
         : [];
     })
     .sort((a, b) => b.score - a.score);
-  await audit(db, projectId, null, runId, "product_scoped_search", {
-    scopeRevision: catalog.scopeRevision,
-    requirementId,
-    query,
-    matchCount: hits.length,
-    paths: hits.slice(0, topK).map((h) => h.path),
-    directoryEmpty: !paths.length,
-  });
+  const traceId = await audit(
+    db,
+    projectId,
+    null,
+    runId,
+    "product_scoped_search",
+    {
+      scopeRevision: catalog.scopeRevision,
+      requirementId,
+      subrequirementId,
+      query,
+      matchCount: hits.length,
+      paths: hits.slice(0, topK).map((h) => h.path),
+      directoryEmpty: !paths.length,
+    },
+  );
   return {
     stage: "selected_product",
+    traceId,
+    subrequirementId,
     requirementId,
     scopeRevision: catalog.scopeRevision,
     total: hits.length,

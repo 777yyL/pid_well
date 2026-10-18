@@ -11,7 +11,8 @@
     "build": "tsc --noEmit && vite build && tsup server/index.ts --format esm --platform node --external vite --out-dir dist/server --sourcemap",
     "start": "node --use-system-ca dist/server/index.js",
     "test": "tsx --import ./tests/env.mjs --test tests/*.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "evaluate:accuracy": "tsx scripts/evaluate-accuracy.ts"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.1.0",

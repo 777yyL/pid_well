@@ -1,3 +1,9 @@
+import {
+  coverageLabel,
+  highRisk,
+  accuracySummary,
+  assessmentEvidence,
+} from "../shared/accuracy.js";
 import type ExcelJS from "exceljs";
 import type { ReportSnapshot } from "./reports.js";
 import { escapeHtml, safeCell } from "./reports.js";
@@ -7,11 +13,13 @@ export const verdictLabels = {
   exact: "完全满足",
   partial: "部分满足",
   no_match: "不满足",
+  unknown: "待确认",
 } as const;
 const tones: Record<string, [string, string]> = {
   完全满足: ["EAF5EE", "176B42"],
   部分满足: ["FFF4DC", "875000"],
   不满足: ["FFF0EE", "A21D15"],
+  待确认: ["EDF3FC", "245C9F"],
 };
 const cellText = (cell: ExcelJS.Cell) =>
   typeof cell.value === "object" && cell.value && "richText" in cell.value
@@ -140,7 +148,7 @@ export function addOverview(
     views: [{ showGridLines: false }],
     properties: { tabColor: { argb: "FF224D3D" } },
   });
-  for (let i = 1; i <= 8; i++) sheet.getColumn(i).width = 17;
+  for (let i = 1; i <= 10; i++) sheet.getColumn(i).width = 17;
   const band = (
     range: string,
     text: string,
@@ -164,10 +172,10 @@ export function addOverview(
     };
     cell.alignment = { vertical: "middle", wrapText: true };
   };
-  band("A1:H2", `${snapshot.project.name} · 招标评估报告`, "224D3D", 22);
+  band("A1:J2", `${snapshot.project.name} · 招标评估报告`, "224D3D", 22);
   band(
-    "A3:H3",
-    `生成时间：${new Date(snapshot.generatedAt).toLocaleString("zh-CN")}　｜　全部条款已确认并复核`,
+    "A3:J3",
+    `生成时间：${new Date(snapshot.generatedAt).toLocaleString("zh-CN")}　｜　处理完成；AI 自检与人工确认见逐条来源；原文覆盖另列`,
     "EDF4EF",
     11,
     "425B4D",
@@ -192,18 +200,19 @@ export function addOverview(
   sheet.getRow(5).height = 26;
   sheet.getRow(6).height = 28;
   sheet.getRow(7).height = 26;
-  band("A9:H9", `产品与交付范围　｜　销售项 ${salesCount} 项`, "224D3D");
+  band("A9:J9", `产品与交付范围　｜　销售项 ${salesCount} 项`, "224D3D");
   sheet.getRow(9).height = 30;
   const products = [
     ...new Set(snapshot.rows.map((r) => `${r.product} ${r.version}`.trim())),
   ].join("、");
-  band("A10:H11", products, "F3F7F4", 12, "24352F");
+  band("A10:J11", products, "F3F7F4", 12, "24352F");
   sheet.getRow(10).height = 30;
   sheet.getRow(11).height = 30;
   band(
-    "A12:H13",
-    snapshot.scope.strategy ||
-      "评估以原始条款、产品证据和人工确认结果为准；数量与授权范围由销售核定。",
+    "A12:J13",
+    `原文覆盖：${snapshot.sourceCoverage?.map((d) => `${d.name} ${coverageLabel(d.status)}（未检查 ${d.uncheckedLines.length} 行）`).join("；") || "待检查"}。\n` +
+      (snapshot.scope.strategy ||
+        "评估以原始条款、产品证据和人工确认结果为准；数量与授权范围由销售核定。"),
     "F3F7F4",
     11,
     "526171",
@@ -211,16 +220,16 @@ export function addOverview(
   sheet.getRow(12).height = 30;
   sheet.getRow(13).height = 30;
   band(
-    "A15:H15",
+    "A15:J15",
     "重点缺口与交付条件（列示前10项，完整结果见匹配报告）",
     "224D3D",
   );
   sheet.getRow(15).height = 30;
-  const risks = snapshot.rows.filter((r) => r.level !== "exact").slice(0, 10);
+  const risks = snapshot.rows.filter(highRisk).slice(0, 10);
   (risks.length ? risks : [undefined]).forEach((row, i) => {
     const n = 16 + i;
     sheet.mergeCells(`B${n}:D${n}`);
-    sheet.mergeCells(`E${n}:H${n}`);
+    sheet.mergeCells(`E${n}:J${n}`);
     sheet.getCell(`A${n}`).value = row?.requirementId ?? "—";
     sheet.getCell(`B${n}`).value = safeCell(
       row?.requirement_raw ?? "未记录部分满足或不满足条款",
@@ -307,21 +316,26 @@ export function renderReportHtml(snapshot: ReportSnapshot, id: string) {
   const cards = snapshot.rows
     .map(
       (row) =>
-        `<article class="assessment ${row.level}"><header><b>${e(row.requirementId)} · ${e(row.module)}</b><span class="badge ${row.level}">${verdictLabels[row.level]}</span></header><h3>招标原文</h3><blockquote class="source">${e(row.requirement_raw)}</blockquote><p class="product">${e(row.product)} ${e(row.version)}　｜　${e(row.sales.join("、") || "未找到对应销售项")}</p><h3>结论说明</h3><p>${e(row.note)}</p><div class="findings"><section class="exact"><h4>已具备</h4>${list(row.ok)}</section><section class="partial"><h4>需配置 / 定制</h4>${list(row.hard)}</section><section class="no_match"><h4>明确缺口</h4>${list(row.no)}</section></div><h3>五项判断依据</h3><dl>${Object.entries(
+        `<article class="assessment ${row.level}"><header><b>${e(row.requirementId)} · ${e(row.module)}</b><span class="badge ${row.level}">${verdictLabels[row.level]}</span></header><h3>招标原文</h3><blockquote class="source">${e(row.requirement_raw)}</blockquote><p class="product">${e(row.product)} ${e(row.version)}　｜　${e(row.sales.join("、") || "未找到对应销售项")}</p><h3>结论说明</h3><p>${e(row.note)}</p><h3>子要求、组合与风险核验</h3><p>${e(accuracySummary(row))}</p><div class="findings"><section class="exact"><h4>已具备</h4>${list(row.ok)}</section><section class="partial"><h4>需配置 / 定制</h4>${list(row.hard)}</section><section class="no_match"><h4>明确缺口</h4>${list(row.no)}</section></div><h3>五项判断依据</h3><dl>${Object.entries(
           row.criteria,
         )
           .map(
             ([key, value]) =>
               `<div><dt>${criteriaNames[key] || e(key)}</dt><dd>${e(value)}</dd></div>`,
           )
-          .join(
-            "",
-          )}</dl><h3>知识库原始证据</h3>${row.evidence.map((proof) => `<div class="evidence"><blockquote>${e(proof.quote)}</blockquote><small>${e(snapshot.pages.find((page) => page.id === proof.snapshotId)?.path)} · L${proof.lineStart}–L${proof.lineEnd}</small></div>`).join("") || "<p class='muted'>未记录对应产品证据</p>"}<p class="muted">交付依赖：${e(row.dependencies.join("、") || "未列出")}　｜　必选项：${e(row.mustSelect.join("、") || "未列出")}　｜　${row.source === "human" ? "人工确认" : "AI 已复核"} · 结果版本 ${row.revision}</p></article>`,
+          .join("")}</dl><h3>知识库原始证据</h3>${
+          assessmentEvidence(row)
+            .map(
+              (proof) =>
+                `<div class="evidence"><blockquote>${e(proof.quote)}</blockquote><small>${e(snapshot.pages.find((page) => page.id === proof.snapshotId)?.path)} · L${proof.lineStart}–L${proof.lineEnd}</small></div>`,
+            )
+            .join("") || "<p class='muted'>未记录对应产品证据</p>"
+        }<p class="muted">交付依赖：${e(row.dependencies.join("、") || "未列出")}　｜　必选项：${e(row.mustSelect.join("、") || "未列出")}　｜　${row.source === "human" ? "人工确认" : "AI 自检完成"} · 结果版本 ${row.revision}</p></article>`,
     )
     .join("");
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(snapshot.project.name)} · 评估报告</title><style>
-  *{box-sizing:border-box}body{margin:0;background:#f0f3f1;color:#24352f;font:14px/1.8 'Microsoft YaHei','Segoe UI',sans-serif}main{max-width:1160px;margin:36px auto;padding:0 24px}h1{font-size:30px;line-height:1.4;margin:0 0 12px}h2{font-size:22px;margin:36px 0 16px}h3{font-size:15px;margin:22px 0 8px}h4{margin:0 0 8px}p{white-space:pre-wrap;margin:8px 0}.cover{padding:32px;background:#224d3d;color:white;border-radius:12px}.cover small{color:#d1e5d7}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:22px 0}.stat,.assessment,.sale{padding:24px;background:#fff;border:1px solid #c8d6ce;border-radius:10px;margin:16px 0}.stat{margin:0}.stat b{display:block;font-size:30px}.exact{color:#176b42;background:#eaf5ee}.partial{color:#875000;background:#fff4dc}.no_match{color:#a21d15;background:#fff0ee}.assessment{color:#24352f;background:white;border-left:5px solid}.assessment.exact{border-left-color:#176b42}.assessment.partial{border-left-color:#ad6500}.assessment.no_match{border-left-color:#b42318}header{display:flex;align-items:center;justify-content:space-between;gap:16px}.badge{padding:4px 14px;border-radius:5px;font-weight:bold;white-space:nowrap}blockquote{margin:10px 0;padding:14px 18px;white-space:pre-wrap;overflow-wrap:anywhere}.source{border-left:3px solid #ad6500;background:#fff7e8}.evidence{padding:14px 18px;background:#f0f5fc;border-left:3px solid #245c9f;margin:12px 0;color:#243b58}.evidence blockquote{padding:0}.muted{color:#526171;font-size:12px}.findings{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.findings section{padding:16px;border-radius:6px}ul{margin:0;padding-left:20px}dl>div{display:grid;grid-template-columns:100px 1fr;border-bottom:1px solid #e1e8e3;padding:10px 0}dt{color:#526171}dd{margin:0;white-space:pre-wrap}.product{font-weight:bold}.sale-spec{white-space:pre-wrap}.toc{padding:16px 0}a{color:#245c9f}.sale header{font-size:17px}.sale dl{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}.sale dl>div{grid-template-columns:80px 1fr}@media(max-width:700px){main{padding:0 14px;margin:16px auto}.stats{grid-template-columns:repeat(2,1fr)}.findings,.sale dl{grid-template-columns:1fr}.cover{padding:22px}h1{font-size:24px}}@media print{@page{size:A4;margin:14mm}body{background:white;font-size:11px}main{margin:0;padding:0}.cover,.stats,.evidence,.badge,.findings{-webkit-print-color-adjust:exact;print-color-adjust:exact}.assessment,.sale{border-radius:0;break-before:auto}.findings section,.evidence,dl>div{break-inside:avoid}h2,h3,header{break-after:avoid}.toc{display:none}}
-  </style></head><body><main><section class="cover"><small>评标AI · 售前评估成果</small><h1>${e(snapshot.project.name)}</h1><p>招标评估报告</p><small>生成时间：${e(new Date(snapshot.generatedAt).toLocaleString("zh-CN"))} · 报告编号 ${e(id)}</small></section><div class="stats"><div class="stat"><span>技术条款 / 销售项</span><b>${snapshot.rows.length} / ${sales.length}</b></div>${Object.entries(
+  *{box-sizing:border-box}body{margin:0;background:#f0f3f1;color:#24352f;font:14px/1.8 'Microsoft YaHei','Segoe UI',sans-serif}main{max-width:1160px;margin:36px auto;padding:0 24px}h1{font-size:30px;line-height:1.4;margin:0 0 12px}h2{font-size:22px;margin:36px 0 16px}h3{font-size:15px;margin:22px 0 8px}h4{margin:0 0 8px}p{white-space:pre-wrap;margin:8px 0}.cover{padding:32px;background:#224d3d;color:white;border-radius:12px}.cover small{color:#d1e5d7}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin:22px 0}.stat,.assessment,.sale{padding:24px;background:#fff;border:1px solid #c8d6ce;border-radius:10px;margin:16px 0}.stat{margin:0}.stat b{display:block;font-size:30px}.exact{color:#176b42;background:#eaf5ee}.partial{color:#875000;background:#fff4dc}.unknown{color:#245c9f;background:#edf3fc}.no_match{color:#a21d15;background:#fff0ee}.assessment{color:#24352f;background:white;border-left:5px solid}.assessment.exact{border-left-color:#176b42}.assessment.partial{border-left-color:#ad6500}.assessment.no_match{border-left-color:#b42318}header{display:flex;align-items:center;justify-content:space-between;gap:16px}.badge{padding:4px 14px;border-radius:5px;font-weight:bold;white-space:nowrap}blockquote{margin:10px 0;padding:14px 18px;white-space:pre-wrap;overflow-wrap:anywhere}.source{border-left:3px solid #ad6500;background:#fff7e8}.evidence{padding:14px 18px;background:#f0f5fc;border-left:3px solid #245c9f;margin:12px 0;color:#243b58}.evidence blockquote{padding:0}.muted{color:#526171;font-size:12px}.findings{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.findings section{padding:16px;border-radius:6px}ul{margin:0;padding-left:20px}dl>div{display:grid;grid-template-columns:100px 1fr;border-bottom:1px solid #e1e8e3;padding:10px 0}dt{color:#526171}dd{margin:0;white-space:pre-wrap}.product{font-weight:bold}.sale-spec{white-space:pre-wrap}.toc{padding:16px 0}a{color:#245c9f}.sale header{font-size:17px}.sale dl{display:grid;grid-template-columns:1fr 1fr;gap:0 24px}.sale dl>div{grid-template-columns:80px 1fr}@media(max-width:700px){main{padding:0 14px;margin:16px auto}.stats{grid-template-columns:repeat(2,1fr)}.findings,.sale dl{grid-template-columns:1fr}.cover{padding:22px}h1{font-size:24px}}@media print{@page{size:A4;margin:14mm}body{background:white;font-size:11px}main{margin:0;padding:0}.cover,.stats,.evidence,.badge,.findings{-webkit-print-color-adjust:exact;print-color-adjust:exact}.assessment,.sale{border-radius:0;break-before:auto}.findings section,.evidence,dl>div{break-inside:avoid}h2,h3,header{break-after:avoid}.toc{display:none}}
+  </style></head><body><main><p>处理完成度、原文覆盖、能力满足度分别核对。原文覆盖：${e(snapshot.sourceCoverage?.map((d) => `${d.name} ${coverageLabel(d.status)}，未检查 ${d.uncheckedLines.length} 行`).join("；") || "待检查")}。未知项不计为满足。</p><section class="cover"><small>评标AI · 售前评估成果</small><h1>${e(snapshot.project.name)}</h1><p>招标评估报告</p><small>生成时间：${e(new Date(snapshot.generatedAt).toLocaleString("zh-CN"))} · 报告编号 ${e(id)}</small></section><div class="stats"><div class="stat"><span>技术条款 / 销售项</span><b>${snapshot.rows.length} / ${sales.length}</b></div>${Object.entries(
     verdictLabels,
   )
     .map(
@@ -330,7 +344,7 @@ export function renderReportHtml(snapshot: ReportSnapshot, id: string) {
     )
     .join(
       "",
-    )}</div><p class="muted">全部条款已确认并复核。数量、授权范围及未提供的报价字段仍需销售核定。</p><nav class="toc"><a href="#assessments">逐条评估</a>　·　<a href="#sales">销售项清单</a></nav><h2>产品范围与评估策略</h2><p>${e([...new Set(snapshot.rows.map((row) => `${row.product} ${row.version}`))].join("、"))}</p><p>${e(snapshot.scope.strategy || "依据招标原文、知识库证据和人工确认结果评估。")}</p><h2>重点缺口与交付条件</h2>${list(snapshot.rows.filter((row) => row.level !== "exact").map((row) => `${row.requirementId} · ${[...row.hard, ...row.no, row.note].filter(Boolean).join("；")}`))}<h2 id="assessments">逐条匹配与证据</h2>${cards}<h2 id="sales">销售项清单 · ${sales.length} 项</h2>${sales
+    )}</div><p class="muted">已录入条款处理完成，AI 自检与人工确认分别列示。数量、授权范围及未提供的报价字段仍需销售核定。</p><nav class="toc"><a href="#assessments">逐条评估</a>　·　<a href="#sales">销售项清单</a></nav><h2>产品范围与评估策略</h2><p>${e([...new Set(snapshot.rows.map((row) => `${row.product} ${row.version}`))].join("、"))}</p><p>${e(snapshot.scope.strategy || "依据招标原文、知识库证据和人工确认结果评估。")}</p><h2>重点缺口与交付条件</h2>${list(snapshot.rows.filter(highRisk).map((row) => `${row.requirementId} · ${[...row.hard, ...row.no, row.note].filter(Boolean).join("；")}`))}<h2 id="assessments">逐条匹配与证据</h2>${cards}<h2 id="sales">销售项清单 · ${sales.length} 项</h2>${sales
     .map(
       ({ entity, requirements }, index) =>
         `<article class="sale"><header><b>${index + 1}. ${e(entity.title)}</b><span class="muted">${e(entity.product)} ${e(entity.version)}</span></header><dl>${[

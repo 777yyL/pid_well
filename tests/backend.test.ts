@@ -95,6 +95,13 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     raw,
     lineStart: 1,
     lineEnd: 1,
+    subrequirements: ["视频预览", "录像回放", "云台控制"].map((raw, i) => ({
+      id: `T-1.${i + 1}`,
+      raw,
+      required: true,
+      lineStart: 1,
+      lineEnd: 1,
+    })),
   };
   const overview = await snapshotPage(
     db,
@@ -386,6 +393,57 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     ],
     dependencies: [],
     mustSelect: [],
+    verification: {
+      version: 2,
+      checks: ["视频预览", "录像回放", "云台控制"].map((name, i) => ({
+        subrequirementId: `T-1.${i + 1}`,
+        level: "exact",
+        direction: "产品提供视频管理",
+        reason: `原文明确支持${name}`,
+        delivery: "native",
+        deliveryConfirmed: true,
+        evidence: [
+          {
+            snapshotId: sale.id,
+            lineStart: evidenceLine,
+            lineEnd: evidenceLine,
+            quote: raw,
+          },
+        ],
+      })),
+      contributions: [
+        {
+          id: "video",
+          product: "测试产品",
+          version: "v1",
+          sales: "视频监控",
+          path: "wiki/entities/sale-items/video.md",
+          moduleId: "VMS",
+          capability: "视频预览、录像回放、云台控制",
+          subrequirementIds: ["T-1.1", "T-1.2", "T-1.3"],
+          purpose: "purchase",
+          reason: "本期明确需求",
+          evidence: [
+            {
+              snapshotId: sale.id,
+              lineStart: evidenceLine,
+              lineEnd: evidenceLine,
+              quote: raw,
+            },
+          ],
+        },
+      ],
+      integrationRequired: false,
+      integrations: [],
+      supplementalSearch: [],
+      counterchecks: {
+        direction: "提供方符合",
+        omissions: "三个子要求均覆盖",
+        quantitative: "无量化限制",
+        external: "无需外部条件",
+        integration: "单产品原生能力",
+      },
+    },
   };
 
   await t.test("认证、CSRF、成员授权及项目越权", async () => {
@@ -536,6 +594,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       () =>
         enforceProductScope(db, projectId, {
           ...item,
+          verification: undefined,
           evidence: [{ ...item.evidence[0], snapshotId: foreign.id }],
         }),
       /所属产品/,
@@ -581,6 +640,27 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       () => saveAssessments(db, projectId, [item], {}),
       /不可被 Agent 覆盖/,
     );
+  });
+  await t.test("已确认条款核验点接口接受T编号并拒绝并发旧值", async () => {
+    const response = await request(
+      "PUT",
+      `/api/projects/${projectId}/requirements/T-1/subrequirements`,
+      {
+        expectedSubrequirements: requirement.subrequirements,
+        subrequirements: requirement.subrequirements,
+      },
+    );
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().raw, raw);
+    const stale = await request(
+      "PUT",
+      `/api/projects/${projectId}/requirements/T-1/subrequirements`,
+      {
+        expectedSubrequirements: null,
+        subrequirements: requirement.subrequirements,
+      },
+    );
+    assert.equal(stale.statusCode, 409, stale.body);
   });
   await t.test(
     "报告从同一份复核结果生成，保存版本证据并防止公式注入",

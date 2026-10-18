@@ -39,6 +39,7 @@ import { Chat } from "./Chat";
 import { Workpane } from "./Workpane";
 import { SharedResult } from "./SharedResult";
 import { ProjectManager } from "./ProjectManager";
+import { CapabilitySearch } from "./CapabilitySearch";
 export function App() {
   const match = window.location.pathname.match(/^\/share\/([^/]+)\/?$/);
   return match ? (
@@ -94,6 +95,7 @@ function WorkspaceShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [managerOpen, setManagerOpen] = useState(true);
+  const [capabilityOpen, setCapabilityOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("workspace.sidebar.collapsed") === "true",
   );
@@ -155,8 +157,11 @@ function WorkspaceShell({
           <button
             aria-label="评估项目"
             title="评估项目"
-            className={managerOpen ? "active" : ""}
-            onClick={() => setManagerOpen(true)}
+            className={managerOpen && !capabilityOpen ? "active" : ""}
+            onClick={() => {
+              setCapabilityOpen(false);
+              setManagerOpen(true);
+            }}
           >
             <FolderOpenOutlined />
             <span>评估项目</span>
@@ -165,15 +170,27 @@ function WorkspaceShell({
             <button
               aria-label="当前评估"
               title="当前评估"
-              className={!managerOpen ? "active" : ""}
-              onClick={() => setManagerOpen(false)}
+              className={!managerOpen && !capabilityOpen ? "active" : ""}
+              onClick={() => {
+                setCapabilityOpen(false);
+                setManagerOpen(false);
+              }}
             >
               <MessageOutlined />
               <span>当前评估</span>
             </button>
           )}
+          <button
+            aria-label="能力检索"
+            title="能力检索"
+            className={capabilityOpen ? "active" : ""}
+            onClick={() => setCapabilityOpen(true)}
+          >
+            <FileSearchOutlined />
+            <span>能力检索</span>
+          </button>
         </nav>
-        {!managerOpen && state.projectId && (
+        {!capabilityOpen && !managerOpen && state.projectId && (
           <>
             <div className="sidebar-divider" />
             <div className="sidebar-section-title">
@@ -278,7 +295,9 @@ function WorkspaceShell({
         </div>
       </aside>
       <main className="workspace-main">
-        {managerOpen ? (
+        {capabilityOpen ? (
+          <CapabilitySearch />
+        ) : managerOpen ? (
           <ProjectManager
             open={managerOpen}
             onClose={() => setManagerOpen(false)}

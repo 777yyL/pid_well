@@ -13,6 +13,7 @@ import { routes } from "./api.js";
 import { AgentRunner } from "./agent.js";
 import { shareRoutes } from "./shares.js";
 import { projectRoutes } from "./projects.js";
+import { capabilityRoutes } from "./capability-routes.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
     logger: {
@@ -54,6 +55,7 @@ export async function createApp(db: Database, serveWeb = false) {
   projectRoutes(app, db);
   routes(app, db, runner);
   shareRoutes(app, db);
+  await capabilityRoutes(app, db);
   app.setErrorHandler((error, request, reply) => {
     const dbCode = (error as { code?: string }).code;
     if (error instanceof ZodError) {

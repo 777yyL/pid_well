@@ -8,6 +8,12 @@ import { config } from "./config.js";
 import { AppError } from "./errors.js";
 import { collectSales, salesHeaders } from "./sale-entity.js";
 import { productScope } from "./product-scope.js";
+import { sourceCoverage } from "./source-coverage.js";
+import {
+  coverageLabel,
+  accuracySummary,
+  assessmentEvidence,
+} from "../shared/accuracy.js";
 import {
   styleTable,
   addOverview,
@@ -47,10 +53,23 @@ export async function captureReport(db: Database, projectId: string) {
       rows.some((r) => !r.reviewed)
     )
       throw new AppError(409, "正式报告需要全部条款已确认、已匹配且已复核");
-    const selectedSales = new Set(rows.flatMap((r) => r.sales));
+    const selectedSales = new Set(
+      rows
+        .filter((r) => r.level === "exact" || r.level === "partial")
+        .flatMap((r) =>
+          r.verification
+            ? r.verification.contributions
+                .filter((c) =>
+                  ["purchase", "dependency", "existing"].includes(c.purpose),
+                )
+                .flatMap((c) => [c.sales, c.moduleId, c.path])
+            : r.sales,
+        ),
+    );
     const missing = [
       ...new Set(
         rows
+          .filter((r) => r.level === "exact" || r.level === "partial")
           .flatMap((r) => [...r.dependencies, ...r.mustSelect])
           .filter((name) => !selectedSales.has(name)),
       ),
@@ -75,6 +94,7 @@ export async function captureReport(db: Database, projectId: string) {
       rows,
       pages,
       docs,
+      sourceCoverage: await sourceCoverage(tx, projectId),
       scope: await productScope(tx, projectId),
       generatedAt: new Date().toISOString(),
     };
@@ -146,6 +166,9 @@ export async function createReport(
     "不满足(no)",
     "结论说明",
     "证据引用",
+    "子要求与组合核验",
+    "复核来源",
+    "原文覆盖检查",
   ];
   const details = rows.flatMap((row) =>
     (row.sales.length ? row.sales : ["—"]).map((sale) => [
@@ -153,18 +176,33 @@ export async function createReport(
       row.module,
       row.requirement_raw,
       sale,
-      row.evidence.map((e) => e.quote).join("\n"),
-      { exact: "完全满足", partial: "部分满足", no_match: "不满足" }[row.level],
+      assessmentEvidence(row)
+        .map((e) => e.quote)
+        .join("\n"),
+      {
+        exact: "完全满足",
+        partial: "部分满足",
+        no_match: "不满足",
+        unknown: "待确认",
+      }[row.level],
       row.ok.join("\n"),
       row.hard.join("\n"),
       row.no.join("\n"),
       row.note,
-      row.evidence
+      assessmentEvidence(row)
         .map(
           (e) =>
             `${pages.find((p) => p.id === e.snapshotId)?.path ?? e.snapshotId}:L${e.lineStart}-L${e.lineEnd} [${e.snapshotId}]`,
         )
         .join("\n"),
+      accuracySummary(row),
+      row.source === "human" ? "人工确认" : row.reviewed ? "AI 自检" : "待自检",
+      snapshot.sourceCoverage
+        ?.map(
+          (d) =>
+            `${d.name} ${coverageLabel(d.status)}；未检查 ${d.uncheckedLines.length} 行`,
+        )
+        .join("\n") || "待检查",
     ]),
   );
   const id = randomUUID();
@@ -176,6 +214,7 @@ export async function createReport(
     generatedAt: snapshot.generatedAt,
     kind,
     productScope: snapshot.scope,
+    sourceCoverage: snapshot.sourceCoverage,
     sales: sales.map(({ entity, page, requirements }) => ({
       title: entity.title,
       product: entity.product,
@@ -193,7 +232,9 @@ export async function createReport(
     documents: docs,
     evidence: pages
       .filter((p) =>
-        rows.some((r) => r.evidence.some((e) => e.snapshotId === p.id)),
+        rows.some((r) =>
+          assessmentEvidence(r).some((e) => e.snapshotId === p.id),
+        ),
       )
       .map(({ content, ...rest }) => rest),
   };
@@ -208,7 +249,11 @@ export async function createReport(
     });
     sheet.addRow(headers);
     details.forEach((row) => sheet.addRow(row.map(safeCell)));
-    styleTable(sheet, [12, 18, 52, 30, 58, 14, 30, 30, 30, 48, 40], 6);
+    styleTable(
+      sheet,
+      [12, 18, 52, 30, 58, 14, 30, 30, 30, 48, 40, 80, 18, 40],
+      6,
+    );
     const salesSheet = book.addWorksheet("销售项清单", {
       views: [{ state: "frozen", ySplit: 1 }],
     });
@@ -243,6 +288,19 @@ export async function createReport(
       snapshot.scope.selected.map((p) => `${p.name} ${p.version}`).join("、"),
     ]);
     provenance.addRow(["售前策略", snapshot.scope.strategy]);
+    for (const d of snapshot.sourceCoverage ?? []) {
+      provenance.addRow([
+        "原文覆盖",
+        d.name,
+        `${coverageLabel(d.status)}；未检查行 ${d.uncheckedLines.join("、")}`,
+      ]);
+      for (const entry of d.entries)
+        provenance.addRow([
+          entry.id,
+          `L${entry.lineStart}-L${entry.lineEnd} ${entry.status}`,
+          `${entry.reason}；关联 ${entry.requirementIds.join("、")} / ${entry.subrequirementIds.join("、")}`,
+        ]);
+    }
     provenance.addRow(["条款", "结果版本", "结论来源"]);
     manifest.requirements.forEach((r) =>
       provenance.addRow([r.id, r.revision, r.source]),
