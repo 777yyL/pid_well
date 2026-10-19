@@ -9,7 +9,7 @@ import { accessProject, requireUser } from "./auth.js";
 import { config, seal, unseal } from "./config.js";
 import { AppError } from "./errors.js";
 import { captureReport, createReport } from "./reports.js";
-import { collectSales } from "./sale-entity.js";
+import { summarizeSales } from "./sale-entity.js";
 import { accuracySummary, assessmentEvidence } from "../shared/accuracy.js";
 import type { SharedResult } from "../shared/share.js";
 const hashToken = (token: string) =>
@@ -54,6 +54,7 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
     );
     if (active) throw new AppError(409, "请等待当前任务结束后分享成果");
     const frozen = await captureReport(db, id);
+    const procurement = summarizeSales(frozen.rows, frozen.pages);
     const files = [];
     for (const [format, kind] of [
       ["xlsx", "full"],
@@ -100,12 +101,12 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
             "知识库证据",
         })),
       })),
-      sales: collectSales(frozen.rows, frozen.pages).map(
-        ({ entity, requirements }) => ({
-          ...entity,
-          requirements: [...requirements],
-        }),
-      ),
+      procurementIssues: procurement.issues,
+      componentReuse: procurement.reused,
+      sales: procurement.sales.map(({ entity, requirements }) => ({
+        ...entity,
+        requirements: [...requirements],
+      })),
     };
     const [share] = await db.query<{
       id: string;

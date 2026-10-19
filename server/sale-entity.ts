@@ -161,6 +161,8 @@ export interface SalePage {
 }
 export interface SaleMatch {
   existingAuthorization?: boolean;
+  dependencies?: string[];
+  mustSelect?: string[];
   level?: AssessmentInput["level"];
   verification?: AssessmentInput["verification"];
   sales: string[];
@@ -169,102 +171,324 @@ export interface SaleMatch {
   requirementId: string;
   evidence: { snapshotId: string }[];
 }
-export function collectSales(rows: SaleMatch[], pages: SalePage[]) {
-  rows = rows.flatMap((row) => {
+export type CollectedSale = {
+  entity: SaleEntity;
+  page: SalePage;
+  requirements: Set<string>;
+  existingAuthorization?: boolean;
+};
+export type ComponentReuse = {
+  requirementId: string;
+  product: string;
+  version: string;
+  sales: string;
+  source: string;
+  reason: string;
+};
+const identityText = (value: string) =>
+  value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s_-]/g, "");
+const versionText = (value: string) =>
+  value.trim().replace(/^v/i, "").toLowerCase();
+function matchesDependency(r: CollectedSale, value: string) {
+  return [
+    r.entity.title,
+    r.entity.moduleId,
+    r.entity.title.replace(/[（(][^）)]*[）)]$/, ""),
+    r.page.path,
+    r.page.path.replace(/\.md$/, ""),
+    r.page.path.replace(/\.md$/, "").split("/").at(-1),
+  ].some((alias) => alias === value.replace(/\.md$/, "") || alias === value);
+}
+
+// An assessment can be exported with procurement issues; unresolved entities are never guessed.
+export function summarizeSales(input: SaleMatch[], pages: SalePage[]) {
+  type Selection = SaleMatch & {
+    entityPath?: string;
+    moduleId?: string;
+    reuseSource?: string;
+    reuseTarget?: string;
+    reuseValid?: boolean;
+    reuseReason?: string;
+  };
+  const issues: string[] = [];
+  const reused: ComponentReuse[] = [];
+  const rows: Selection[] = input.flatMap((row): Selection[] => {
     if (row.level === "unknown" || row.level === "no_match") return [];
     if (!row.verification) return [row];
-    return row.verification.contributions
+    const v = row.verification;
+    return v.contributions
       .filter((c) => ["purchase", "dependency", "existing"].includes(c.purpose))
-      .map((c) => ({
-        ...row,
-        existingAuthorization: c.purpose === "existing",
-        verification: undefined,
-        sales: [c.sales],
-        product: c.product,
-        version: c.version,
-        evidence: c.evidence,
-      }));
+      .map((c) => {
+        const target = v.contributions.find((t) => t.id === c.reuseOf);
+        const valid =
+          !c.reuseOf ||
+          (c.purpose === "existing" &&
+            !!target &&
+            target.id !== c.id &&
+            !target.reuseOf &&
+            ["purchase", "dependency", "existing"].includes(target.purpose) &&
+            ((target.product === c.product &&
+              target.version === c.version &&
+              target.path === c.path &&
+              target.moduleId === c.moduleId) ||
+              v.integrations.some(
+                (i) =>
+                  i.confirmed &&
+                  i.evidence.length &&
+                  i.authorization.trim() &&
+                  ((i.from === c.id && i.to === target.id) ||
+                    (i.to === c.id && i.from === target.id)),
+              )));
+        return {
+          ...row,
+          verification: undefined,
+          sales: [c.sales],
+          product: c.product,
+          version: c.version,
+          evidence: c.evidence,
+          entityPath: c.path,
+          moduleId: c.moduleId,
+          existingAuthorization: c.purpose === "existing",
+          reuseSource: target
+            ? `${target.product} ${target.version} / ${target.sales} (${target.path})`
+            : undefined,
+          reuseTarget: target?.path,
+          reuseValid: valid,
+          reuseReason: c.reason,
+        };
+      });
   });
-  const records = new Map<
+  const records = new Map<string, CollectedSale>();
+  const conflicting = new Set<string>();
+  const sourceVersions = new Map<
     string,
-    {
-      entity: SaleEntity;
-      page: SalePage;
-      requirements: Set<string>;
-      existingAuthorization?: boolean;
-    }
+    { hash: string; requirements: Set<string> }
   >();
+  const conflictingSources = new Set<string>();
+  const purchase = new Set<string>(),
+    existing = new Set<string>();
   for (const row of rows)
     for (const name of row.sales) {
+      const context = `${row.requirementId} · ${row.product} ${row.version} / ${name}`;
       const ids = new Set(row.evidence.map((e) => e.snapshotId));
-      let candidates = pages
-        .filter((p) => ids.has(p.id))
-        .map((page) => ({ page, entity: parseSaleEntity(page.content) }))
-        .filter((c) => c.entity.title === name);
-      candidates = candidates.filter(
-        (c) =>
-          (!row.version ||
-            c.entity.version.replace(/^v/i, "") ===
-              row.version.replace(/^v/i, "")) &&
-          (!row.product || c.entity.product === row.product),
-      );
-      if (candidates.length !== 1)
-        throw new AppError(
-          409,
-          `销售项 ${name} 缺少唯一实体证据或引用了多个内容版本，请统一后导出`,
+      const candidates = pages
+        .filter(
+          (p) =>
+            ids.has(p.id) && (!row.entityPath || p.path === row.entityPath),
+        )
+        .flatMap((page) => {
+          try {
+            return [{ page, entity: parseSaleEntity(page.content) }];
+          } catch {
+            issues.push(
+              `${context}：实体元数据无法解析，路径 ${page.path}，快照 ${page.id}；未纳入采购清单。`,
+            );
+            return [];
+          }
+        })
+        .filter(
+          (c) =>
+            c.entity.title === name &&
+            (!row.moduleId || c.entity.moduleId === row.moduleId) &&
+            (!row.version ||
+              versionText(c.entity.version) === versionText(row.version)) &&
+            (!row.product ||
+              identityText(c.entity.product) === identityText(row.product)),
         );
-      const { page, entity } = candidates[0];
-      const key = JSON.stringify([
-        entity.product,
-        entity.version,
-        entity.moduleId || entity.title,
+      const equivalent = new Map(
+        candidates.map((c) => [JSON.stringify([c.page.path, c.page.hash]), c]),
+      );
+      if (equivalent.size !== 1) {
+        const paths =
+          pages
+            .filter((p) => ids.has(p.id))
+            .map((p) => `${p.path} [${p.id}; ${p.hash.slice(0, 12)}]`)
+            .join("、") || "无实体快照";
+        issues.push(
+          `${context}：${equivalent.size ? "引用了多个内容版本或多个实体，无法唯一定位" : "实体未匹配，请核对路径、模块标识、产品与版本"}。${row.entityPath ? `指定路径 ${row.entityPath}。` : ""}引用：${paths}`,
+        );
+        // Remove an earlier selection too, rather than silently retaining one side of a conflict.
+        for (const c of candidates) {
+          const key = JSON.stringify([
+            identityText(c.entity.product),
+            versionText(c.entity.version),
+            c.entity.moduleId || c.entity.title,
+            c.page.path,
+          ]);
+          records.delete(key);
+          conflicting.add(key);
+          conflictingSources.add(
+            JSON.stringify([
+              identityText(c.entity.product),
+              versionText(c.entity.version),
+              c.page.path,
+            ]),
+          );
+        }
+        continue;
+      }
+      const { page, entity } = [...equivalent.values()][0];
+      const sourceKey = JSON.stringify([
+        identityText(entity.product),
+        versionText(entity.version),
+        page.path,
       ]);
+      if (conflictingSources.has(sourceKey)) continue;
+      const previousSource = sourceVersions.get(sourceKey);
+      if (previousSource && previousSource.hash !== page.hash) {
+        issues.push(
+          `${context}：同一实体存在多个内容版本，与 ${[...previousSource.requirements].join("、")} 冲突。路径 ${page.path}；内容哈希 ${previousSource.hash.slice(0, 12)}、${page.hash.slice(0, 12)}，请统一采购依据。`,
+        );
+        for (const [oldKey, old] of records)
+          if (
+            old.page.path === page.path &&
+            identityText(old.entity.product) === identityText(entity.product) &&
+            versionText(old.entity.version) === versionText(entity.version)
+          ) {
+            records.delete(oldKey);
+            conflicting.add(oldKey);
+          }
+        conflictingSources.add(sourceKey);
+        continue;
+      }
+      if (previousSource) previousSource.requirements.add(row.requirementId);
+      else
+        sourceVersions.set(sourceKey, {
+          hash: page.hash,
+          requirements: new Set([row.requirementId]),
+        });
+      const key = JSON.stringify([
+        identityText(entity.product),
+        versionText(entity.version),
+        entity.moduleId || entity.title,
+        page.path,
+      ]);
+      if (conflicting.has(key)) continue;
       const prior = records.get(key);
       if (
         prior &&
         (prior.page.hash !== page.hash || prior.entity.title !== entity.title)
-      )
-        throw new AppError(
-          409,
-          `销售项 ${name} 的实体版本存在冲突，请统一证据`,
+      ) {
+        issues.push(
+          `${context}：同一实体存在多个内容版本，与 ${[...prior.requirements].join("、")} 冲突。路径 ${page.path}；快照 ${prior.page.id} [${prior.page.hash.slice(0, 12)}]、${page.id} [${page.hash.slice(0, 12)}]，请核实后统一采购依据。`,
         );
-      if (prior) {
-        prior.requirements.add(row.requirementId);
-        prior.existingAuthorization ||= row.existingAuthorization;
-      } else
+        records.delete(key);
+        conflicting.add(key);
+        continue;
+      }
+      if (row.existingAuthorization) existing.add(key);
+      else purchase.add(key);
+      if (prior) prior.requirements.add(row.requirementId);
+      else
         records.set(key, {
           page,
           entity,
           requirements: new Set([row.requirementId]),
-          existingAuthorization: row.existingAuthorization,
+          existingAuthorization: !!row.existingAuthorization,
         });
+      if (row.reuseSource && row.reuseValid)
+        reused.push({
+          requirementId: row.requirementId,
+          product: row.product,
+          version: row.version,
+          sales: name,
+          source: row.reuseSource,
+          reason: row.reuseReason || "",
+        });
+      if (row.reuseValid === false)
+        issues.push(
+          `${context}：组件复用来源或授权依据未确认，不能视为已解决交付依赖。`,
+        );
     }
-  const missing = [
-    ...new Set(
-      [...records.values()].flatMap((r) =>
-        r.entity.dependencies.filter(
-          (d) =>
-            ![...records.values()].some(
-              (other) =>
-                (other.entity.title === d ||
-                  other.entity.moduleId === d ||
-                  other.entity.title.replace(/[（(][^）)]*[）)]$/, "") === d ||
-                  other.page.path.replace(/\.md$/, "").split("/").at(-1) ===
-                    d ||
-                  other.page.path
-                    .replace(/\.md$/, "")
-                    .endsWith(d.replace(/\.md$/, ""))) &&
-                other.entity.product === r.entity.product &&
-                other.entity.version === r.entity.version,
-            ),
-        ),
-      ),
-    ),
-  ];
-  if (missing.length)
-    throw new AppError(
-      409,
-      `销售项实体声明的交付依赖尚未列入清单：${missing.join("、")}，请补充匹配与证据`,
+  const all = [...records.values()];
+  const validPaths = new Set(all.map((r) => r.page.path));
+  const confirmedReuse = reused.filter((r) => {
+    const source = rows.find(
+      (s) =>
+        s.requirementId === r.requirementId &&
+        s.reuseSource === r.source &&
+        s.sales.includes(r.sales),
     );
-  return [...records.values()].filter((r) => !r.existingAuthorization);
+    if (source?.reuseTarget && validPaths.has(source.reuseTarget)) return true;
+    issues.push(
+      `${r.requirementId} · ${r.product} / ${r.sales}：复用来源实体存在歧义，需核实。`,
+    );
+    return false;
+  });
+  const reusedPaths = new Set(
+    rows
+      .filter(
+        (r) =>
+          r.reuseSource &&
+          confirmedReuse.some(
+            (c) =>
+              c.requirementId === r.requirementId &&
+              c.source === r.reuseSource &&
+              r.sales.includes(c.sales),
+          ),
+      )
+      .map((r) => r.entityPath),
+  );
+  for (const [key, record] of records) {
+    if (existing.has(key) && purchase.has(key))
+      issues.push(
+        `${[...record.requirements].join("、")} · ${record.entity.product} ${record.entity.version} / ${record.entity.title}：同时记录新增采购与已有授权，请核定实际授权范围；保留采购行，不自动扣减。路径 ${record.page.path}`,
+      );
+    record.existingAuthorization = existing.has(key) && !purchase.has(key);
+    for (const d of record.existingAuthorization &&
+    reusedPaths.has(record.page.path)
+      ? []
+      : record.entity.dependencies)
+      if (
+        !all.some(
+          (other) =>
+            matchesDependency(other, d) &&
+            identityText(other.entity.product) ===
+              identityText(record.entity.product) &&
+            versionText(other.entity.version) ===
+              versionText(record.entity.version),
+        )
+      )
+        issues.push(
+          `${[...record.requirements].join("、")} · ${record.entity.product} ${record.entity.version} / ${record.entity.title}：交付依赖 ${d} 尚未列入同产品版本清单。跨产品同名组件不视为自动复用，需记录已有授权及确认复用来源。`,
+        );
+  }
+  for (const row of input.filter(
+    (r) => r.level !== "unknown" && r.level !== "no_match",
+  ))
+    for (const d of [...(row.dependencies || []), ...(row.mustSelect || [])]) {
+      // Legacy declarations have no contribution identity; report the uncertainty instead of guessing across products.
+      if (
+        !all.some(
+          (other) =>
+            matchesDependency(other, d) &&
+            (!!row.verification ||
+              identityText(other.entity.product) ===
+                identityText(row.product)) &&
+            (!!row.verification ||
+              !row.version ||
+              versionText(other.entity.version) === versionText(row.version)),
+        )
+      )
+        issues.push(
+          `${row.requirementId} · ${row.product} ${row.version}：声明的交付依赖或必选项 ${d} 待核实（跨产品需明确复用授权）。`,
+        );
+    }
+  return {
+    sales: all.filter((r) => !r.existingAuthorization),
+    issues: [...new Set(issues)],
+    reused: confirmedReuse,
+  };
+}
+export function collectSales(
+  rows: SaleMatch[],
+  pages: SalePage[],
+): CollectedSale[] {
+  const result = summarizeSales(rows, pages);
+  if (result.issues.length)
+    throw new AppError(409, `采购清单尚未核定：${result.issues.join("\n")}`);
+  return result.sales;
 }

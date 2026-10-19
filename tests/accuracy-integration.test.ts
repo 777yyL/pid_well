@@ -11,10 +11,11 @@ import {
   saveAssessments,
   assessmentRows,
   supplementSubrequirements,
+  validateVerification,
 } from "../server/assessment.js";
 import { saveCoverage, sourceCoverage } from "../server/source-coverage.js";
 import { createTools } from "../server/tools.js";
-import { collectSales } from "../server/sale-entity.js";
+import { collectSales, summarizeSales } from "../server/sale-entity.js";
 import { captureReport, createReport } from "../server/reports.js";
 import { renderReportHtml } from "../server/report-layout.js";
 import type { AssessmentInput, RequirementInput } from "../shared/domain.js";
@@ -247,6 +248,31 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
       assert.deepEqual(
         collectSales([existing], pages).map((s) => s.entity.product),
         ["B"],
+      );
+      const reuse = copy();
+      reuse.verification!.contributions[1].purpose = "existing";
+      reuse.verification!.contributions[1].reuseOf = "A";
+      reuse.verification!.contributions[1].reason =
+        "已核实主产品提供共享组件授权";
+      await validateVerification(db, projectId, reuse, requirement);
+      const procurement = summarizeSales([reuse], pages);
+      assert.deepEqual(
+        procurement.sales.map((s) => s.entity.product),
+        ["A"],
+      );
+      assert.equal(procurement.reused[0].product, "B");
+      assert.match(procurement.reused[0].source, /A v1/);
+      const unconfirmed = structuredClone(reuse);
+      unconfirmed.verification!.integrations[0].confirmed = false;
+      await assert.rejects(
+        () => validateVerification(db, projectId, unconfirmed, requirement),
+        /共享|复用/,
+      );
+      const circular = structuredClone(reuse);
+      circular.verification!.contributions[1].reuseOf = "B";
+      await assert.rejects(
+        () => validateVerification(db, projectId, circular, requirement),
+        /循环复用/,
       );
     });
     await t.test(

@@ -683,6 +683,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
           "功能点匹配报告",
           "销售项清单",
           "销售项技术明细",
+          "采购核定事项",
           "证据与版本",
         ],
       );
@@ -748,10 +749,35 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         [{ ...item, dependencies: ["尚未列入的必选基础包"] }],
         { human: true },
       );
-      await assert.rejects(
-        () => createReport(db, projectId, "xlsx"),
-        /缺少交付依赖/,
+      const pending = await createReport(db, projectId, "xlsx");
+      assert.match(pending.name, /采购待核实/);
+      assert.match(
+        pending.manifest.procurementIssues.join("\n"),
+        /尚未列入的必选基础包/,
       );
+      const pendingSales = await createReport(db, projectId, "xlsx", "sales");
+      assert.match(pendingSales.name, /采购待核实/);
+      const pendingHtml = await createReport(db, projectId, "html");
+      const pendingHtmlResponse = await request("GET", pendingHtml.url);
+      assert.match(pendingHtmlResponse.body, /不作为最终采购或报价依据/);
+      assert.match(pendingHtmlResponse.body, /尚未列入的必选基础包/);
+      const pendingShare = await request(
+        "POST",
+        `/api/projects/${projectId}/shares`,
+        { days: 1 },
+      );
+      assert.equal(pendingShare.statusCode, 200, pendingShare.body);
+      const pendingToken = new URL(pendingShare.json().url).pathname
+        .split("/")
+        .at(-1);
+      const publicPending = await app.inject({
+        url: `/api/shared/${pendingToken}`,
+      });
+      assert.match(
+        publicPending.json().procurementIssues.join("\n"),
+        /尚未列入的必选基础包/,
+      );
+      assert.equal(publicPending.json().files.length, 3);
       await saveAssessments(db, projectId, [item], { human: true });
     },
   );

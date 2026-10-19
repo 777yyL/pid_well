@@ -6,7 +6,7 @@ import type { Database } from "./db.js";
 import { assessmentRows } from "./assessment.js";
 import { config } from "./config.js";
 import { AppError } from "./errors.js";
-import { collectSales, salesHeaders } from "./sale-entity.js";
+import { summarizeSales, salesHeaders } from "./sale-entity.js";
 import { productScope } from "./product-scope.js";
 import { sourceCoverage } from "./source-coverage.js";
 import {
@@ -53,32 +53,6 @@ export async function captureReport(db: Database, projectId: string) {
       rows.some((r) => !r.reviewed)
     )
       throw new AppError(409, "正式报告需要全部条款已确认、已匹配且已复核");
-    const selectedSales = new Set(
-      rows
-        .filter((r) => r.level === "exact" || r.level === "partial")
-        .flatMap((r) =>
-          r.verification
-            ? r.verification.contributions
-                .filter((c) =>
-                  ["purchase", "dependency", "existing"].includes(c.purpose),
-                )
-                .flatMap((c) => [c.sales, c.moduleId, c.path])
-            : r.sales,
-        ),
-    );
-    const missing = [
-      ...new Set(
-        rows
-          .filter((r) => r.level === "exact" || r.level === "partial")
-          .flatMap((r) => [...r.dependencies, ...r.mustSelect])
-          .filter((name) => !selectedSales.has(name)),
-      ),
-    ];
-    if (missing.length)
-      throw new AppError(
-        409,
-        `销售项清单缺少交付依赖或必选项：${missing.join("、")}，请补充匹配与证据后导出`,
-      );
     const pages = await tx.query<{
       id: string;
       path: string;
@@ -114,7 +88,8 @@ export async function createReport(
   if (snapshot.project.id !== projectId)
     throw new AppError(400, "报告项目不一致");
   const { project, rows, pages, docs } = snapshot;
-  const sales = collectSales(rows, pages);
+  const procurement = summarizeSales(rows, pages);
+  const sales = procurement.sales;
   const saleRows = sales.map(({ entity, requirements }, index) => {
     const missing = [
       ["产品", entity.product],
@@ -127,6 +102,8 @@ export async function createReport(
       .filter(([, value]) => !value)
       .map(([name]) => name);
     const remarks = [
+      procurement.issues.length &&
+        "当前为待核实参考清单；采购核定事项见独立工作表",
       entity.description,
       entity.quotation && `报价说明：${entity.quotation}`,
       entity.version && `版本：${entity.version}`,
@@ -195,7 +172,10 @@ export async function createReport(
             `${pages.find((p) => p.id === e.snapshotId)?.path ?? e.snapshotId}:L${e.lineStart}-L${e.lineEnd} [${e.snapshotId}]`,
         )
         .join("\n"),
-      accuracySummary(row),
+      accuracySummary(row) +
+        (procurement.issues.length
+          ? `\n采购核定事项：${procurement.issues.join("；")}`
+          : ""),
       row.source === "human" ? "人工确认" : row.reviewed ? "AI 自检" : "待自检",
       snapshot.sourceCoverage
         ?.map(
@@ -206,7 +186,7 @@ export async function createReport(
     ]),
   );
   const id = randomUUID();
-  const name = `${project.name}-${kind === "sales" ? "销售项清单" : "评估报告"}.${format}`;
+  const name = `${project.name}-${kind === "sales" ? "销售项清单" : "评估报告"}${procurement.issues.length ? "（采购待核实）" : ""}.${format}`;
   const storageName = `${id}.${format}`;
   const manifest = {
     projectId,
@@ -215,6 +195,8 @@ export async function createReport(
     kind,
     productScope: snapshot.scope,
     sourceCoverage: snapshot.sourceCoverage,
+    procurementIssues: procurement.issues,
+    componentReuse: procurement.reused,
     sales: sales.map(({ entity, page, requirements }) => ({
       title: entity.title,
       product: entity.product,
@@ -274,6 +256,22 @@ export async function createReport(
     for (const column of [7, 8, 9])
       salesSheet.getColumn(column).numFmt =
         column === 7 ? "#,##0.##" : "#,##0.00";
+    const purchasing = book.addWorksheet("采购核定事项");
+    purchasing.addRow(["类型", "核定事项"]);
+    purchasing.addRow([
+      "清单状态",
+      procurement.issues.length
+        ? "待核实参考清单，不作为最终采购或报价依据"
+        : "已通过实体与依赖核对，数量与授权范围仍需销售核定",
+    ]);
+    procurement.issues.forEach((issue) => purchasing.addRow(["待确认", issue]));
+    procurement.reused.forEach((r) =>
+      purchasing.addRow([
+        "组件复用",
+        `${r.requirementId} · ${r.product} ${r.version} / ${r.sales} → ${r.source}；${r.reason}`,
+      ]),
+    );
+    styleTable(purchasing, [18, 110]);
     const provenance = book.addWorksheet("证据与版本");
     provenance.addRow(["报告 ID", id]);
     provenance.addRow(["知识库项目", project.wiki_project_id]);

@@ -80,6 +80,7 @@ export const verificationSchema = z.object({
         "optional",
         "candidate",
       ]),
+      reuseOf: z.string().min(1).optional(),
       reason: z.string().min(1),
       evidence: z.array(evidenceSchema).min(1),
     }),

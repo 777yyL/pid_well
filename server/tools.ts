@@ -563,7 +563,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "export_report",
       "生成正式报告",
-      "基于全部已确认、匹配、复核的结果生成正式报告。不完整时拒绝生成；返回可下载链接。",
+      "基于全部已确认、匹配、复核的结果生成评估报告。条款未完成仍拒绝；采购身份、内容版本或配套待确认不阻断报告，返回 manifest.procurementIssues 并输出明确标注的参考清单，禁止称为最终采购配置。同一实体可在多条条款引用不同行。返回可下载链接。",
       z.object({
         format: z.enum(["xlsx", "csv", "html"]),
         kind: z.enum(["full", "sales"]).default("full"),

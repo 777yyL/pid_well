@@ -27,6 +27,15 @@ export interface SharedAssessment extends Pick<
   }[];
 }
 export interface SharedResult {
+  procurementIssues?: string[];
+  componentReuse?: {
+    requirementId: string;
+    product: string;
+    version: string;
+    sales: string;
+    source: string;
+    reason: string;
+  }[];
   sourceCoverage?: { name: string; status: string; uncheckedLines: number[] }[];
   projectName: string;
   generatedAt: string;

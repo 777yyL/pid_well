@@ -176,7 +176,7 @@ export function accuracySummary(item: AssessmentInput) {
     ),
     ...v.contributions.map(
       (c) =>
-        `${c.product} ${c.version} / ${c.sales} [${purpose[c.purpose]}]：${c.capability}；${c.reason}`,
+        `${c.product} ${c.version} / ${c.sales} [${purpose[c.purpose]}]：${c.capability}；${c.reason}${c.reuseOf ? `；复用来源贡献项 ${c.reuseOf}` : ""}`,
     ),
     ...v.integrations.map(
       (i) =>

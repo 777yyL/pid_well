@@ -148,7 +148,10 @@ if (process.env.QA_REPORTS === "true") {
             lineEnd: 1,
             quote: "---",
           })),
-          dependencies: [],
+          dependencies:
+            process.env.QA_PROCUREMENT === "true" && index === 0
+              ? ["主产品基础包授权待核实"]
+              : [],
           mustSelect: [],
         }),
         index === 0 ? "human" : "agent",

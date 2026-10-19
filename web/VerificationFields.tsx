@@ -362,6 +362,26 @@ export function VerificationFields({
                           <Select options={purposes} />
                         </Form.Item>
                         <Form.Item
+                          name={[f.name, "reuseOf"]}
+                          label="复用来源贡献项（可选，仅限已有授权用途）"
+                          extra="跨产品复用须在联动核验中确认授权与证据；同名组件不会自动共享。"
+                        >
+                          <Select
+                            allowClear
+                            placeholder="不指定则按已有授权单独记录"
+                            options={contributionOptions.filter(
+                              (o) =>
+                                o.value !==
+                                form.getFieldValue([
+                                  "verification",
+                                  "contributions",
+                                  f.name,
+                                  "id",
+                                ]),
+                            )}
+                          />
+                        </Form.Item>
+                        <Form.Item
                           name={[f.name, "subrequirementIds"]}
                           label="对应子要求"
                         >

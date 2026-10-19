@@ -218,6 +218,30 @@ export function SharedResult({ token }: { token: string }) {
           .join("；") || "待检查"}
         。未知项不计为满足。
       </p>
+      {!!result.procurementIssues?.length && (
+        <section className="shared-strategy">
+          <h2>采购清单待核实</h2>
+          <p>当前销售项为参考清单，尚不能作为最终采购或报价依据。</p>
+          <ul>
+            {result.procurementIssues.map((issue) => (
+              <li key={issue}>{issue}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {!!result.componentReuse?.length && (
+        <section className="shared-strategy">
+          <h2>组件复用记录</h2>
+          <ul>
+            {result.componentReuse.map((r, i) => (
+              <li key={i}>
+                {r.requirementId} · {r.product} {r.version} / {r.sales} →{" "}
+                {r.source}；{r.reason}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {result.strategy && (
         <section className="shared-strategy">
           <h2>售前选型策略</h2>

@@ -17,6 +17,7 @@ test("工具协议文本不执行，正常讨论协议名称不误判", () => {
 import {
   parseSaleEntity,
   collectSales,
+  summarizeSales,
   salesHeaders,
   entitySection,
 } from "../server/sale-entity.js";
@@ -120,6 +121,151 @@ test("销售清单按实体去重，检查依赖和快照冲突", () => {
     /多个内容版本/,
   );
 });
+test("销售项允许跨条款不同行、等价快照引用；采购歧义不阻断评估汇总", () => {
+  const page = {
+    id: "video",
+    path: "wiki/entities/sale-items/a-video.md",
+    hash: "same",
+    content:
+      "---\ntitle: 视频监控\nproduct: A\nversion: v1\nmodule_id: VIDEO\n---\n支持协议接入\n支持录像计划",
+  };
+  const row = {
+    sales: ["视频监控"],
+    product: "A",
+    version: "v1",
+    requirementId: "T-1",
+    evidence: [{ snapshotId: "video", lineStart: 8 }],
+  };
+  const alias = { ...page, id: "alias" };
+  const rows = [
+    row,
+    {
+      ...row,
+      requirementId: "T-2",
+      evidence: [
+        { snapshotId: "video", lineStart: 9 },
+        { snapshotId: "alias", lineStart: 8 },
+      ],
+    },
+    { ...row, requirementId: "T-4" },
+  ];
+  const result = summarizeSales(rows, [page, alias]);
+  assert.equal(result.sales.length, 1);
+  assert.deepEqual([...result.sales[0].requirements], ["T-1", "T-2", "T-4"]);
+  assert.deepEqual(result.issues, []);
+  const conflict = {
+    ...page,
+    id: "changed",
+    hash: "changed",
+    content: page.content + "\n价格变更",
+  };
+  const pending = summarizeSales(
+    [
+      ...rows,
+      { ...row, requirementId: "T-5", evidence: [{ snapshotId: "changed" }] },
+    ],
+    [page, alias, conflict],
+  );
+  assert.equal(pending.sales.length, 0);
+  assert.match(pending.issues.join("\n"), /T-5.*内容版本|内容版本.*T-5/);
+  assert.match(pending.issues.join("\n"), /a-video.md/);
+  const changedId = {
+    ...conflict,
+    content: conflict.content.replace(
+      "module_id: VIDEO",
+      "module_id: VIDEO-NEW",
+    ),
+  };
+  assert.equal(
+    summarizeSales(
+      [
+        row,
+        { ...row, requirementId: "T-6", evidence: [{ snapshotId: "changed" }] },
+      ],
+      [page, changedId],
+    ).sales.length,
+    0,
+  );
+  const malformed = { ...page, content: "---\ntitle: [bad\n---" };
+  assert.match(
+    summarizeSales([row], [malformed]).issues.join("\n"),
+    /无法解析/,
+  );
+  const missing = summarizeSales(
+    [{ ...row, dependencies: ["基础包"] }],
+    [page],
+  );
+  assert.equal(missing.sales.length, 1);
+  assert.match(missing.issues.join("\n"), /基础包/);
+  const mixed = summarizeSales(
+    [row, { ...row, requirementId: "T-2", existingAuthorization: true }],
+    [page],
+  );
+  assert.equal(mixed.sales.length, 1);
+  assert.match(mixed.issues.join("\n"), /新增采购.*已有授权/);
+});
+
+test("贡献项按准确路径和模块定位，同名跨产品组件不自动合并", () => {
+  const pages = ["A", "B"].map((p) => ({
+    id: p,
+    path: `wiki/entities/sale-items/${p}-video.md`,
+    hash: p,
+    content: `---\ntitle: 视频监控\nproduct: ${p}\nversion: v1\nmodule_id: VIDEO\n---\n支持视频`,
+  }));
+  const contributions = pages.map((p) => ({
+    id: p.id,
+    sales: "视频监控",
+    product: p.id,
+    version: "v1",
+    moduleId: "VIDEO",
+    path: p.path,
+    purpose: "purchase" as const,
+    capability: "视频",
+    reason: "本产品视频授权",
+    subrequirementIds: [],
+    evidence: [
+      { snapshotId: p.id, lineStart: 8, lineEnd: 8, quote: "支持视频" },
+    ],
+  }));
+  const row = {
+    requirementId: "T-1",
+    sales: ["视频监控"],
+    product: "A",
+    version: "v1",
+    evidence: [],
+    verification: {
+      version: 2 as const,
+      checks: [],
+      contributions,
+      integrations: [],
+      integrationRequired: true,
+      supplementalSearch: [],
+      counterchecks: {
+        direction: "核实",
+        omissions: "核实",
+        quantitative: "核实",
+        external: "核实",
+        integration: "核实",
+      },
+    },
+  };
+  assert.equal(summarizeSales([row], pages).sales.length, 2);
+  const duplicate = {
+    ...pages[0],
+    id: "other",
+    path: "wiki/entities/sale-items/a-another-video.md",
+    hash: "another",
+    content: pages[0].content.replace("VIDEO", "ANOTHER"),
+  };
+  row.verification.contributions[0].evidence.push({
+    snapshotId: "other",
+    lineStart: 8,
+    lineEnd: 8,
+    quote: "支持视频",
+  });
+  assert.equal(summarizeSales([row], [...pages, duplicate]).sales.length, 2);
+});
+
 test("模板列顺序一致，阅读区间和工具消息组压缩保持完整", async () => {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile("sps销售项清单模板.xlsx");

@@ -256,6 +256,38 @@ export async function validateVerification(
     }
     if (!found) throw new AppError(422, "贡献项必须引用指定正式实体页");
   }
+  for (const c of v.contributions.filter((c) => c.reuseOf)) {
+    const target = v.contributions.find((other) => other.id === c.reuseOf);
+    if (
+      c.purpose !== "existing" ||
+      !target ||
+      target.id === c.id ||
+      target.reuseOf ||
+      !["purchase", "dependency", "existing"].includes(target.purpose)
+    )
+      throw new AppError(
+        422,
+        "组件复用必须由已有授权项指向本条款中明确选用的来源贡献项，不能循环复用",
+      );
+    if (
+      (target.product !== c.product ||
+        target.version !== c.version ||
+        target.path !== c.path ||
+        target.moduleId !== c.moduleId) &&
+      !v.integrations.some(
+        (i) =>
+          i.confirmed &&
+          i.evidence.length &&
+          i.authorization.trim() &&
+          ((i.from === c.id && i.to === target.id) ||
+            (i.to === c.id && i.from === target.id)),
+      )
+    )
+      throw new AppError(
+        422,
+        "组件复用需要已确认的集成与授权证据，不能仅凭同名认定共享",
+      );
+  }
   for (const c of v.contributions.filter((c) => c.purpose === "dependency")) {
     const entity = entities.get(c.id)!;
     if (
