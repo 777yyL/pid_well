@@ -80,6 +80,14 @@ export function Workpane({
     end?: number;
   } | null>(null);
   const [uploading, setUploading] = useState(false);
+  const uploadLock = useRef(false);
+  const [uploadItems, setUploadItems] = useState<
+    {
+      name: string;
+      status: "waiting" | "uploading" | "ready" | "failed";
+      error?: string;
+    }[]
+  >([]);
   const [selected, setSelected] = useState<React.Key[]>([]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -107,24 +115,72 @@ export function Workpane({
     results.length === requirements.length &&
     results.every((r) => r.reviewed) &&
     pending.length === 0;
-  async function upload(file?: File) {
-    if (!file) return;
+  async function upload(files: File[]) {
+    if (!files.length || uploadLock.current) return;
+    uploadLock.current = true;
     setUploading(true);
+    setTab("documents");
+    setUploadItems(
+      files.map((file) => ({ name: file.name, status: "waiting" })),
+    );
+    const projectId = workspace.project.id;
+    const projectName = workspace.project.name;
+    let succeeded = 0;
+    const update = (
+      index: number,
+      status: "uploading" | "ready" | "failed",
+      error?: string,
+    ) =>
+      setUploadItems((items) =>
+        items.map((item, i) =>
+          i === index ? { ...item, status, error } : item,
+        ),
+      );
     try {
-      const data = new FormData();
-      data.append("file", file);
-      await api(`/projects/${workspace.project.id}/documents`, {
-        method: "POST",
-        body: data,
-      });
-      await onRefresh();
-      message.success("文件已上传并解析，可开始与 Agent 讨论");
-    } catch (e) {
-      message.error((e as Error).message);
-      await onRefresh();
+      for (const [index, file] of files.entries()) {
+        update(index, "uploading");
+        try {
+          if (!/\.(docx|xlsx|pdf|md|txt)$/i.test(file.name))
+            throw new Error(
+              "不支持此格式，请使用 DOCX / XLSX / PDF / MD / TXT",
+            );
+          if (file.size > 25 * 1024 * 1024)
+            throw new Error("单个文件不能超过 25 MB");
+          const data = new FormData();
+          data.append("file", file);
+          await api(`/projects/${projectId}/documents`, {
+            method: "POST",
+            body: data,
+          });
+          succeeded++;
+          update(index, "ready");
+        } catch (e) {
+          update(
+            index,
+            "failed",
+            e instanceof Error ? e.message : "上传失败，请重新选择该文件重试",
+          );
+        }
+      }
+      if (succeeded === files.length)
+        message.success(
+          `${projectName}：${succeeded} 份文件已上传并解析，可以开始评估`,
+        );
+      else
+        message.warning(
+          `${projectName}：成功 ${succeeded} 份，失败 ${files.length - succeeded} 份，请检查文件列表`,
+        );
     } finally {
       setUploading(false);
+      uploadLock.current = false;
       if (fileInput.current) fileInput.current.value = "";
+      try {
+        await onRefresh();
+      } catch {
+        message.warning(
+          "上传批次已结束，文件列表刷新失败，请刷新页面查看实际结果，不要重复提交已成功的文件",
+        );
+      }
     }
   }
   async function confirm() {
@@ -252,16 +308,69 @@ export function Workpane({
       <div className="section-toolbar">
         <div>
           <h3>招标文件</h3>
-          <p>原始文件与稳定行号，是整个评估的证据基准。</p>
+          <p>一个子系统一份文件，可一次选择多份；原文及行号分别保留。</p>
         </div>
         <Button
           icon={<UploadOutlined />}
           loading={uploading}
           onClick={() => fileInput.current?.click()}
         >
-          上传文件
+          批量上传文件
         </Button>
       </div>
+      {!!uploadItems.length && (
+        <section aria-label="批量上传进度" aria-live="polite">
+          <Alert
+            type={
+              uploading
+                ? "info"
+                : uploadItems.some((item) => item.status === "failed")
+                  ? "warning"
+                  : "success"
+            }
+            showIcon
+            message={
+              uploading
+                ? `上传解析中：已完成 ${uploadItems.filter((item) => ["ready", "failed"].includes(item.status)).length} / ${uploadItems.length} 份，请等待全部完成后开始评估`
+                : `本批次：${uploadItems.filter((item) => item.status === "ready").length} 份成功，${uploadItems.filter((item) => item.status === "failed").length} 份失败`
+            }
+          />
+          {uploadItems
+            .filter((item) => uploading || item.status === "failed")
+            .map((item, index) => (
+              <div className="document-row" key={index}>
+                <FileTextOutlined />
+                <div>
+                  <b>{item.name}</b>
+                  {item.error && <small>{item.error}</small>}
+                </div>
+                <Tag
+                  color={
+                    item.status === "ready"
+                      ? "success"
+                      : item.status === "failed"
+                        ? "error"
+                        : item.status === "uploading"
+                          ? "processing"
+                          : "default"
+                  }
+                >
+                  {
+                    {
+                      waiting: "等待上传",
+                      uploading: "上传 / 解析中",
+                      ready: "已完成",
+                      failed: "失败，可重新选择此文件",
+                    }[item.status]
+                  }
+                </Tag>
+              </div>
+            ))}
+        </section>
+      )}
+      {!!uploadItems.length && !!workspace.documents.length && (
+        <h4>项目文件 · {workspace.documents.length} 份</h4>
+      )}
       {workspace.documents.length ? (
         workspace.documents.map((doc) => (
           <div className="document-row" key={doc.id}>
@@ -312,14 +421,14 @@ export function Workpane({
           onClick={() => fileInput.current?.click()}
         >
           <UploadOutlined />
-          <h3>上传项目的第一份招标文件</h3>
+          <h3>上传项目的子系统招标文件</h3>
           <p>
             支持 DOCX、XLSX、PDF、MD、TXT
             <br />
-            单个文件最大 25 MB
+            可一次选择多份，每个文件最大 25 MB
           </p>
           <Button type="primary" loading={uploading}>
-            选择文件
+            选择一份或多份文件
           </Button>
         </div>
       )}
@@ -677,9 +786,11 @@ export function Workpane({
       <input
         hidden
         type="file"
+        multiple
+        disabled={uploading}
         ref={fileInput}
         accept=".docx,.xlsx,.pdf,.md,.txt"
-        onChange={(e) => void upload(e.target.files?.[0])}
+        onChange={(e) => void upload(Array.from(e.target.files ?? []))}
       />
       <Tabs
         activeKey={tab}
