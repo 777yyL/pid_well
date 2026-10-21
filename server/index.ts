@@ -13,6 +13,7 @@ import { routes } from "./api.js";
 import { AgentRunner } from "./agent.js";
 import { shareRoutes } from "./shares.js";
 import { projectRoutes } from "./projects.js";
+import { knowledgeRoutes } from "./product-knowledge.js";
 import { capabilityRoutes } from "./capability-routes.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
@@ -52,6 +53,7 @@ export async function createApp(db: Database, serveWeb = false) {
     }),
   });
   const runner = new AgentRunner(db);
+  knowledgeRoutes(app, db);
   projectRoutes(app, db);
   routes(app, db, runner);
   shareRoutes(app, db);

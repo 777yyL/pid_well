@@ -1,3 +1,4 @@
+import { projectKnowledge } from "./structured-knowledge.js";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
@@ -241,6 +242,17 @@ export async function validateVerification(
       );
       if (page?.path === c.path) {
         const entity = parseSaleEntity(page.content);
+        if (entity.saleItemId) {
+          if (
+            (c.saleItemId && c.saleItemId !== entity.saleItemId) ||
+            (c.knowledgeReleaseId &&
+              c.knowledgeReleaseId !== entity.knowledgeReleaseId)
+          )
+            throw new AppError(422, "贡献项销售项ID或发布版本与证据不一致");
+          c.saleItemId = entity.saleItemId;
+          c.knowledgeReleaseId = entity.knowledgeReleaseId;
+        } else if (c.saleItemId || c.knowledgeReleaseId)
+          throw new AppError(422, "Wiki历史证据不能声明结构化销售项ID");
         entities.set(c.id, entity);
         if (entity.title !== c.sales || entity.moduleId !== c.moduleId)
           throw new AppError(422, "贡献项标识与实体不一致");
@@ -296,8 +308,11 @@ export async function validateVerification(
         (other) =>
           other.id !== c.id &&
           ["purchase", "dependency", "existing"].includes(other.purpose) &&
-          other.product === c.product &&
-          other.version === c.version &&
+          ((other.product === c.product && other.version === c.version) ||
+            (!!entities.get(other.id)?.knowledgeReleaseId &&
+              entities.get(other.id)?.knowledgeReleaseId ===
+                entities.get(c.id)?.knowledgeReleaseId &&
+              entities.get(other.id)?.dependencies.includes(c.path))) &&
           entities
             .get(other.id)
             ?.dependencies.some((d) =>
@@ -482,6 +497,10 @@ export async function saveAssessments(
     )
       throw new AppError(422, "必须先读取知识库总览和产品页再保存匹配");
     for (const item of items) {
+      const release = await projectKnowledge(tx, projectId);
+      if (item.knowledgeReleaseId && item.knowledgeReleaseId !== release?.id)
+        throw new AppError(422, "评估引用的知识发布版本与项目固定版本不一致");
+      if (release) item.knowledgeReleaseId = release.id;
       checkVerdict(item);
       const scopeRevision = await enforceProductScope(tx, projectId, item);
       if (scopeRevision) item.productScopeRevision = scopeRevision;

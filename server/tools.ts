@@ -34,6 +34,7 @@ import {
   alternativeSchema,
   recordAlternative,
 } from "./product-search.js";
+import { projectKnowledge, knowledgeContent } from "./structured-knowledge.js";
 import { loadSettings } from "./settings.js";
 export interface ToolContext {
   db: Database;
@@ -87,10 +88,19 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       "SELECT wiki_project_id FROM projects WHERE id=$1",
       [projectId],
     );
-    const content = await new WikiClient(db, signal).read(
-      p.wiki_project_id,
-      args.path,
+    const release = await projectKnowledge(
+      db,
+      projectId,
+      args.path === PRODUCT_OVERVIEW_PATH,
     );
+    const structured = release
+      ? knowledgeContent(release, args.path)
+      : undefined;
+    if (args.path.startsWith("wiki/structured/") && structured === undefined)
+      throw new AppError(422, "页面不属于本项目固定知识版本");
+    const content =
+      structured ??
+      (await new WikiClient(db, signal).read(p.wiki_project_id, args.path));
     const snapshot = await snapshotPage(db, projectId, args.path, content);
     const lines = content.split(/\r?\n/);
     return {
@@ -137,6 +147,9 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         );
         return {
           project,
+          knowledgeRelease: await projectKnowledge(db, projectId).then((r) =>
+            r ? { id: r.id, name: r.name, createdAt: r.created_at } : null,
+          ),
           productOverview: {
             path: PRODUCT_OVERVIEW_PATH,
             tool: "wiki_overview",

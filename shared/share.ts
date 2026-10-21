@@ -17,6 +17,7 @@ export interface SharedAssessment extends Pick<
   | "mustSelect"
   | "source"
   | "revision"
+  | "knowledgeReleaseId"
 > {
   accuracySummary?: string;
   evidence: {
@@ -46,6 +47,8 @@ export interface SharedResult {
     product: string;
     version: string;
     moduleId: string;
+    saleItemId?: string;
+    knowledgeReleaseId?: string;
     category: string;
     specification: string;
     unit: string;

@@ -13,6 +13,7 @@ import {
 import { ApiOutlined, CheckCircleOutlined } from "@ant-design/icons";
 import type { SettingsView } from "../shared/domain";
 import { api, post } from "./api";
+import { KnowledgePublishing } from "./KnowledgePublishing";
 export function Settings({
   open,
   onClose,
@@ -223,6 +224,12 @@ export function Settings({
           </p>
         </div>
       </Form>
+      {open && section === "wiki" && (
+        <>
+          <Divider orientation="left">结构化知识版本</Divider>
+          <KnowledgePublishing />
+        </>
+      )}
     </Modal>
   );
 }

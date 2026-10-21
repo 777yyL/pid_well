@@ -81,6 +81,8 @@ export const verificationSchema = z.object({
         "candidate",
       ]),
       reuseOf: z.string().min(1).optional(),
+      saleItemId: z.string().min(1).optional(),
+      knowledgeReleaseId: z.string().uuid().optional(),
       reason: z.string().min(1),
       evidence: z.array(evidenceSchema).min(1),
     }),
@@ -117,6 +119,7 @@ export const verificationSchema = z.object({
 });
 export const assessmentSchema = z.object({
   productScopeRevision: z.number().int().positive().optional(),
+  knowledgeReleaseId: z.string().uuid().optional(),
   requirementId: z.string(),
   sales: z.array(z.string().min(1)),
   product: z.string().min(1),
@@ -173,6 +176,7 @@ export const productCombinationSchema = z.object({
     .max(20),
 });
 export interface ProductScope {
+  knowledgeRelease?: { id: string; name: string };
   combinations?: z.infer<typeof productCombinationSchema>[];
   revision: number;
   status: "pending" | "confirmed" | "legacy";

@@ -1,3 +1,4 @@
+import { projectKnowledge, overviewMarkdown } from "./structured-knowledge.js";
 import type { FastifyInstance } from "fastify";
 import { randomUUID, createHash } from "node:crypto";
 import { basename, extname, resolve } from "node:path";
@@ -348,10 +349,13 @@ export function routes(
       "SELECT wiki_project_id FROM projects WHERE id=$1",
       [id],
     );
-    const content = await new WikiClient(db).read(
-      project.wiki_project_id,
-      PRODUCT_OVERVIEW_PATH,
-    );
+    const release = await projectKnowledge(db, id, true);
+    const content = release
+      ? overviewMarkdown(release)
+      : await new WikiClient(db).read(
+          project.wiki_project_id,
+          PRODUCT_OVERVIEW_PATH,
+        );
     await snapshotPage(db, id, PRODUCT_OVERVIEW_PATH, content);
     return productScope(db, id);
   });

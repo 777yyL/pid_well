@@ -191,6 +191,9 @@ export async function createReport(
   const manifest = {
     projectId,
     wikiProjectId: project.wiki_project_id,
+    knowledgeReleaseIds: [
+      ...new Set(rows.map((r) => r.knowledgeReleaseId).filter(Boolean)),
+    ],
     generatedAt: snapshot.generatedAt,
     kind,
     productScope: snapshot.scope,
@@ -202,6 +205,8 @@ export async function createReport(
       product: entity.product,
       version: entity.version,
       moduleId: entity.moduleId,
+      saleItemId: entity.saleItemId,
+      knowledgeReleaseId: entity.knowledgeReleaseId,
       snapshotId: page.id,
       hash: page.hash,
       requirements: [...requirements],

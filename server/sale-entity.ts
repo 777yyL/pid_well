@@ -8,6 +8,8 @@ export interface SaleEntity {
   version: string;
   category: string;
   moduleId: string;
+  saleItemId?: string;
+  knowledgeReleaseId?: string;
   unit: string;
   price?: number;
   quantity?: number;
@@ -42,12 +44,17 @@ export function entitySection(text: string, name: string) {
     ),
   );
   if (start < 0) return "";
+  const startLevel = lines[start].trim().match(/^(#{1,6})\s/)?.[1].length;
   let end = start + 1;
-  while (
-    end < lines.length &&
-    !/^(?:#{1,6}\s|\*\*[^*]+\*\*\s*$)/.test(lines[end].trim())
-  )
+  while (end < lines.length) {
+    const heading = lines[end].trim().match(/^(#{1,6})\s/);
+    if (
+      (heading && (!startLevel || heading[1].length <= startLevel)) ||
+      (!startLevel && /^\*\*[^*]+\*\*\s*$/.test(lines[end].trim()))
+    )
+      break;
     end++;
+  }
   return lines
     .slice(start + 1, end)
     .join("\n")
@@ -119,6 +126,12 @@ export function parseSaleEntity(content: string): SaleEntity {
     version: clean(get("version", "版本", "产品版本") || banner?.[2]),
     category: clean(get("category", "分类", "产品类别") || banner?.[3]),
     moduleId: clean(get("module_id", "moduleId", "模块ID", "模块 ID", "型号")),
+    ...(get("sale_item_id")
+      ? {
+          saleItemId: clean(get("sale_item_id")),
+          knowledgeReleaseId: clean(get("knowledge_release_id")),
+        }
+      : {}),
     unit: clean(get("unit", "单位")),
     price: number(get("fixed_price", "固定价", "单价")),
     quantity: number(get("quantity", "数量")),
@@ -201,6 +214,19 @@ function matchesDependency(r: CollectedSale, value: string) {
     r.page.path.replace(/\.md$/, ""),
     r.page.path.replace(/\.md$/, "").split("/").at(-1),
   ].some((alias) => alias === value.replace(/\.md$/, "") || alias === value);
+}
+
+function saleIdentity(entity: SaleEntity, page: SalePage) {
+  return JSON.stringify(
+    entity.saleItemId && entity.knowledgeReleaseId
+      ? ["structured", entity.knowledgeReleaseId, entity.saleItemId]
+      : [
+          identityText(entity.product),
+          versionText(entity.version),
+          entity.moduleId || entity.title,
+          page.path,
+        ],
+  );
 }
 
 // An assessment can be exported with procurement issues; unresolved entities are never guessed.
@@ -312,12 +338,7 @@ export function summarizeSales(input: SaleMatch[], pages: SalePage[]) {
         );
         // Remove an earlier selection too, rather than silently retaining one side of a conflict.
         for (const c of candidates) {
-          const key = JSON.stringify([
-            identityText(c.entity.product),
-            versionText(c.entity.version),
-            c.entity.moduleId || c.entity.title,
-            c.page.path,
-          ]);
+          const key = saleIdentity(c.entity, c.page);
           records.delete(key);
           conflicting.add(key);
           conflictingSources.add(
@@ -360,12 +381,7 @@ export function summarizeSales(input: SaleMatch[], pages: SalePage[]) {
           hash: page.hash,
           requirements: new Set([row.requirementId]),
         });
-      const key = JSON.stringify([
-        identityText(entity.product),
-        versionText(entity.version),
-        entity.moduleId || entity.title,
-        page.path,
-      ]);
+      const key = saleIdentity(entity, page);
       if (conflicting.has(key)) continue;
       const prior = records.get(key);
       if (
@@ -446,14 +462,18 @@ export function summarizeSales(input: SaleMatch[], pages: SalePage[]) {
         !all.some(
           (other) =>
             matchesDependency(other, d) &&
-            identityText(other.entity.product) ===
+            ((identityText(other.entity.product) ===
               identityText(record.entity.product) &&
-            versionText(other.entity.version) ===
-              versionText(record.entity.version),
+              versionText(other.entity.version) ===
+                versionText(record.entity.version)) ||
+              (!!record.entity.knowledgeReleaseId &&
+                record.entity.knowledgeReleaseId ===
+                  other.entity.knowledgeReleaseId &&
+                other.page.path === d)),
         )
       )
         issues.push(
-          `${[...record.requirements].join("、")} · ${record.entity.product} ${record.entity.version} / ${record.entity.title}：交付依赖 ${d} 尚未列入同产品版本清单。跨产品同名组件不视为自动复用，需记录已有授权及确认复用来源。`,
+          `${[...record.requirements].join("、")} · ${record.entity.product} ${record.entity.version} / ${record.entity.title}：交付依赖 ${d} 尚未列入所需产品版本清单。跨产品同名组件不视为自动复用，需记录已有授权及确认复用来源。`,
         );
   }
   for (const row of input.filter(

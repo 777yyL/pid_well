@@ -76,6 +76,7 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
       files,
       rows: frozen.rows.map((row) => ({
         requirementId: row.requirementId,
+        knowledgeReleaseId: row.knowledgeReleaseId,
         module: row.module,
         requirement_raw: row.requirement_raw,
         product: row.product,

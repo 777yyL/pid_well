@@ -14,6 +14,7 @@ import type { ProductScope, ProductAlternative } from "../shared/domain";
 import { api } from "./api";
 import { KnowledgeMarkdown } from "./KnowledgeReader";
 import { AppstoreOutlined } from "@ant-design/icons";
+import { ProductCatalog } from "./ProductCatalog";
 const key = (p: { name: string; version: string }) =>
   JSON.stringify([p.name, p.version]);
 function ProductBasics({
@@ -208,6 +209,9 @@ export function ProductSelection({
       <div className="section-toolbar">
         <div>
           <h3>产品选型</h3>
+          {scope.knowledgeRelease && (
+            <Tag color="blue">知识版本 · {scope.knowledgeRelease.name}</Tag>
+          )}
           <p>先基于整份清单比较产品，再按售前策略确定匹配范围。</p>
         </div>
         <Button
@@ -276,7 +280,8 @@ export function ProductSelection({
             </Button>
           </Space>
         }
-        width={720}
+        width={920}
+        style={{ top: 24 }}
         className="product-detail-modal"
       >
         {detail && (
@@ -293,26 +298,39 @@ export function ProductSelection({
                 <Tag>{detail.version || "版本待核实"}</Tag>
               </div>
             </div>
-            <ProductBasics product={detail} />
-            <div className="recommendation-facts">
-              <section>
-                <h4>覆盖能力</h4>
-                <div className="recommendation-fact-body">
-                  <KnowledgeMarkdown text={detail.coverage} />
-                </div>
-              </section>
-              <section className="recommendation-caution">
-                <h4>待核实项</h4>
-                <div className="recommendation-fact-body">
-                  <KnowledgeMarkdown
-                    text={
-                      detail.gaps ||
-                      "暂无单列缺口，具体规格与授权仍需逐条核实。"
-                    }
-                  />
-                </div>
-              </section>
-            </div>
+            <details className="recommendation-expand">
+              <summary>
+                产品基本信息 · {detail.productLine || "产品档案"}
+              </summary>
+              <ProductBasics product={detail} />
+            </details>
+            <ProductCatalog
+              key={`${projectId}:${key(detail)}`}
+              projectId={projectId}
+              product={detail}
+            />
+            <details className="recommendation-expand">
+              <summary>产品覆盖能力与待核实项</summary>
+              <div className="recommendation-facts">
+                <section>
+                  <h4>覆盖能力</h4>
+                  <div className="recommendation-fact-body">
+                    <KnowledgeMarkdown text={detail.coverage} />
+                  </div>
+                </section>
+                <section className="recommendation-caution">
+                  <h4>待核实项</h4>
+                  <div className="recommendation-fact-body">
+                    <KnowledgeMarkdown
+                      text={
+                        detail.gaps ||
+                        "暂无单列缺口，具体规格与授权仍需逐条核实。"
+                      }
+                    />
+                  </div>
+                </section>
+              </div>
+            </details>
             <details className="recommendation-expand">
               <summary>为什么推荐这个产品</summary>
               <KnowledgeMarkdown text={detail.reason} />
@@ -518,11 +536,24 @@ export function ProductSelection({
                 key={key(p)}
                 className={`recommended-product-card ${selectedProducts.includes(key(p)) ? "selected" : ""}`}
               >
-                <div className="product-card-heading">
+                <div
+                  className="product-card-heading"
+                  onClick={() => setDetailKey(key(p))}
+                >
                   <span className="product-card-icon">
                     <AppstoreOutlined />
                   </span>
-                  <div>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`查看 ${p.productName || p.name} 销售项目录`}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDetailKey(key(p));
+                      }
+                    }}
+                  >
                     <h4>{p.productName || p.name}</h4>
                     <div className="product-card-identity">
                       <code>{p.productId || "标识未提供"}</code>
@@ -531,17 +562,31 @@ export function ProductSelection({
                   </div>
                   <Checkbox
                     value={key(p)}
+                    onClick={(e) => e.stopPropagation()}
                     aria-label={`选择 ${p.name} ${p.version}`}
                   />
                 </div>
-                <ProductBasics product={p} compact />
+                <div
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看 ${p.name} 产品资料`}
+                  onClick={() => setDetailKey(key(p))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setDetailKey(key(p));
+                    }
+                  }}
+                >
+                  <ProductBasics product={p} compact />
+                </div>
                 <Button
                   className="product-details-button"
                   disabled={false}
                   type="link"
                   onClick={() => setDetailKey(key(p))}
                 >
-                  查看能力、基本信息与依据
+                  查看销售项目录与依据
                 </Button>
               </article>
             ))}

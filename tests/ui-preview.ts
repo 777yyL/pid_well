@@ -55,6 +55,110 @@ if (process.env.QA_PROJECTS === "true") {
     );
   }
 }
+if (process.env.QA_KNOWLEDGE === "true") {
+  const { projectKnowledge, overviewMarkdown } =
+    await import("../server/structured-knowledge.js");
+  await db.query(
+    "INSERT INTO product_kb.kb_products(product_id,product_code,name,product_line,department,owner,summary,status,source_path) VALUES('isc','iSecure Center','综合安防管理平台','综合安防软件','综合安防产品部','产品维护人','面向园区的综合安防管理，覆盖视频应用、人员通行及基础服务。','active','wiki/entities/products/isc.md')",
+  );
+  await db.query(
+    "INSERT INTO product_kb.kb_product_versions(product_version_id,product_id,version,status) VALUES('v1','isc','v1.0.0','active'),('v2','isc','v2.0.0','active')",
+  );
+  for (const [i, name] of ["智慧通行", "视频应用", "基础服务"].entries())
+    await db.query(
+      "INSERT INTO product_kb.kb_categories(category_id,product_version_id,name,sort_order) VALUES($1,'v1',$2,$3)",
+      ["c" + i, name, i],
+    );
+  const names = [
+    "门禁管理",
+    "访客管理",
+    "人员通行",
+    "重点区域门禁管控",
+    "人脸通行",
+    "梯控管理",
+    "车行管理",
+    "视频监控",
+    "录像回放",
+    "视频巡检",
+    "视频联动",
+    "视频检索",
+    "告警管理",
+    "基础包",
+    "组织管理",
+    "设备管理",
+    "地图应用",
+  ];
+  for (const [i, name] of names.entries())
+    await db.query(
+      "INSERT INTO product_kb.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,description,specification_md,unit,price_type,fixed_price,currency,mandatory,authorization_note,source_path,status) VALUES($1,'v1',$2,$3,$4,$5,$6,'套','fixed',$7,'CNY',false,'按实际部署核定授权，不默认跨产品共享',$8,'active')",
+      [
+        "sale" + i,
+        "c" + (i < 7 ? 0 : i < 13 ? 1 : 2),
+        "ISC-" + i,
+        name,
+        "用于" + name + "业务场景",
+        "### 功能介绍\n支持" +
+          name +
+          "配置及事件查询。\n### 使用条件\n需部署基础服务，实际设备兼容性需核实。",
+        i === 0 ? 0 : 5000 + i * 100,
+        "wiki/entities/sale-items/sale" + i + ".md",
+      ],
+    );
+  const data = {
+    products: await db.query("SELECT * FROM product_kb.kb_products"),
+    versions: await db.query("SELECT * FROM product_kb.kb_product_versions"),
+    categories: await db.query("SELECT * FROM product_kb.kb_categories"),
+    saleItems: await db.query("SELECT * FROM product_kb.kb_sale_items"),
+    dependencies: [],
+  };
+  await db.query(
+    "INSERT INTO product_kb.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'ec087b7b-beb8-4e7d-920c-b6d169e58a9d','目录验证版',$2,$3)",
+    [randomUUID(), JSON.stringify(data), userId],
+  );
+  const release = await projectKnowledge(db, projectId, true);
+  const overview = await snapshotPage(
+    db,
+    projectId,
+    "wiki/overview.md",
+    overviewMarkdown(release!),
+  );
+  const rec = {
+    name: "iSecure Center",
+    version: "v1.0.0",
+    path: "wiki/entities/products/isc.md",
+    productId: "iSecure Center",
+    productName: "综合安防管理平台",
+    productLine: "综合安防软件",
+    department: "综合安防产品部",
+    owner: "产品维护人",
+    reason: "综合安防平台覆盖本项目视频和通行需求，建议优先核实目录。",
+    coverage: "覆盖视频、通行及基础服务",
+    gaps: "具体参数及授权待逐条核实",
+    evidence: [
+      {
+        snapshotId: overview.id,
+        lineStart: 1,
+        lineEnd: overview.content.split("\n").length,
+        quote: overview.content,
+      },
+    ],
+  };
+  const combinations = [
+    {
+      name: "综合安防单平台",
+      summary: "以综合安防平台覆盖主要业务，具体模块及参数后续逐项核实。",
+      products: [{ name: rec.name, version: rec.version, role: "主平台" }],
+    },
+  ];
+  await db.query(
+    "INSERT INTO product_scopes(project_id,status,recommendations) VALUES($1,'pending',$2)",
+    [projectId, JSON.stringify([rec])],
+  );
+  await db.query(
+    "INSERT INTO audit_log(project_id,action,data) VALUES($1,'products_recommended',$2)",
+    [projectId, JSON.stringify({ combinations })],
+  );
+}
 const { app } = await createApp(db, true);
 if (process.env.QA_REPORTS === "true") {
   await db.query(

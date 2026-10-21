@@ -12,6 +12,14 @@ import {
 } from "./wiki.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import { retrievalTokens } from "../shared/retrieval.js";
+import {
+  projectKnowledge,
+  materializeProduct,
+  knowledgeChoice,
+  knowledgePath,
+  knowledgeContent,
+  saleMarkdown,
+} from "./structured-knowledge.js";
 import { productScope } from "./product-scope.js";
 import {
   productChoiceSchema,
@@ -40,8 +48,10 @@ export async function resolveProductPage(
   projectId: string,
   choice: Choice,
 ) {
+  const release = await projectKnowledge(db, projectId);
+  if (release) return materializeProduct(db, projectId, release, choice);
   const pages = await db.query<Page>(
-    "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 AND kind='product' ORDER BY path,created_at DESC",
+    "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 AND kind='product'  ORDER BY path,created_at DESC",
     [projectId],
   );
   const matches = pages.filter((page) => {
@@ -186,6 +196,22 @@ export async function selectedCatalog(
   const scope = await productScope(db, projectId);
   if (scope.status !== "confirmed" || !scope.selected.length)
     throw new AppError(409, "请先确认产品与版本，再建立销售项目录");
+  const release = await projectKnowledge(db, projectId);
+  if (release) {
+    const products = [];
+    for (const choice of scope.selected) {
+      const { product, version } = knowledgeChoice(release, choice);
+      const root = await materializeProduct(db, projectId, release, choice);
+      products.push({
+        choice: { ...choice, path: root.path },
+        root: { id: root.id, path: root.path },
+        paths: release.data.saleItems
+          .filter((s) => s.product_version_id === version.product_version_id)
+          .map((s) => knowledgePath(release.id, "sale-items", s.sale_item_id)),
+      });
+    }
+    return { parserVersion: 4, scopeRevision: scope.revision, products };
+  }
   const [cached] = await db.query<{ data: Catalog }>(
     "SELECT data FROM audit_log WHERE project_id=$1 AND action='product_catalog' AND (data->>'scopeRevision')::int=$2 ORDER BY id DESC LIMIT 1",
     [projectId, scope.revision],
@@ -251,6 +277,7 @@ export async function readCatalogPage(
   const paths = [...new Set(catalog.products.flatMap((p) => p.paths))];
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);
   const items = [];
+  const release = await projectKnowledge(db, projectId);
   let loaded = offset;
   for (const path of paths.slice(offset, offset + count)) {
     signal?.throwIfAborted();
@@ -260,7 +287,13 @@ export async function readCatalogPage(
     );
     const page =
       cached ??
-      (await snapshotPage(db, projectId, path, await wiki.read(wikiId, path)));
+      (await snapshotPage(
+        db,
+        projectId,
+        path,
+        (release ? knowledgeContent(release, path) : undefined) ??
+          (await wiki.read(wikiId, path)),
+      ));
     const owners = catalog.products.filter(
       (p) => p.paths.includes(path) && belongs(page, p.choice),
     );
@@ -333,6 +366,19 @@ export async function searchSelected(
   }
   const catalog = await selectedCatalog(db, projectId, runId, signal);
   const paths = [...new Set(catalog.products.flatMap((p) => p.paths))];
+  const release = await projectKnowledge(db, projectId);
+  if (release)
+    return searchStructured(
+      db,
+      projectId,
+      runId,
+      release,
+      catalog,
+      requirementId,
+      query,
+      topK,
+      subrequirementId,
+    );
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);
   // Search only nominates candidates. Full pages below provide the evidence;
   // membership and version checks still use the selected product directory.
@@ -461,6 +507,102 @@ export async function searchSelected(
     note: "已按产品页目录及版本过滤，excerpts 来自实体快照，可直接引用；片段不足再 wiki_read。召回有数量限制，未命中不证明不支持，应换关键词或记录原因补查。分数仅表示相关性。",
   };
 }
+async function searchStructured(
+  db: Database,
+  projectId: string,
+  runId: string,
+  release: import("../shared/product-knowledge.js").KnowledgeRelease,
+  catalog: Catalog,
+  requirementId: string,
+  query: string,
+  topK: number,
+  subrequirementId?: string,
+  fallback?: { reason: string; explanation: string },
+) {
+  const started = Date.now(),
+    tokens = retrievalTokens(query);
+  const allowed = new Set(catalog.products.flatMap((p) => p.paths));
+  const ranked = release.data.saleItems
+    .flatMap((s) => {
+      const path = knowledgePath(release.id, "sale-items", s.sale_item_id);
+      if (!allowed.has(path)) return [];
+      const text = [
+        s.name,
+        s.module_code,
+        s.description,
+        s.specification_md,
+        s.prerequisites,
+        s.limitations,
+      ]
+        .join(" ")
+        .toLowerCase();
+      const score = tokens.reduce(
+        (n, t) =>
+          n +
+          (text.includes(t)
+            ? t.length * (s.name.toLowerCase().includes(t) ? 4 : 1)
+            : 0),
+        0,
+      );
+      return score ? [{ sale: s, path, score }] : [];
+    })
+    .sort((a, b) => b.score - a.score);
+  const results = [];
+  for (const hit of ranked.slice(0, topK)) {
+    const page = await snapshotPage(
+      db,
+      projectId,
+      hit.path,
+      saleMarkdown(release, hit.sale),
+    );
+    results.push({
+      path: page.path,
+      snapshotId: page.id,
+      sales: hit.sale.name,
+      moduleId: hit.sale.module_code,
+      saleItemId: hit.sale.sale_item_id,
+      knowledgeReleaseId: release.id,
+      score: hit.score,
+      products: catalog.products
+        .filter((p) => p.paths.includes(page.path))
+        .map((p) => p.choice),
+      ...evidenceExcerpts(page.content, tokens),
+    });
+  }
+  const traceId = await audit(
+    db,
+    projectId,
+    null,
+    runId,
+    fallback ? "product_global_search" : "product_scoped_search",
+    {
+      scopeRevision: catalog.scopeRevision,
+      knowledgeReleaseId: release.id,
+      requirementId,
+      subrequirementId,
+      query,
+      matchCount: ranked.length,
+      paths: results.map((r) => r.path),
+      elapsedMs: Date.now() - started,
+      mode: "structured_keyword",
+      ...fallback,
+    },
+  );
+  return {
+    stage: fallback ? "global_fallback" : "selected_product",
+    traceId,
+    requirementId,
+    subrequirementId,
+    scopeRevision: catalog.scopeRevision,
+    total: ranked.length,
+    results,
+    mode: "structured_keyword",
+    knowledgeReleaseId: release.id,
+    elapsedMs: Date.now() - started,
+    note: "检索限定于项目固定发布数据，当前为关键词召回，不是满足性结论。全局补查结果只能作为替代建议，确认加入范围后才能正式匹配。片段为发布数据的固定渲染，可按行号引用。",
+  };
+}
+
 function evidenceExcerpts(content: string, tokens: string[]) {
   const lines = content.split(/\r?\n/);
   const ranges: {
@@ -564,6 +706,34 @@ export async function searchGlobalFallback(
       422,
       "产品内已有候选，应先核实候选；证据不足时明确记录不足原因",
     );
+  const release = await projectKnowledge(db, projectId);
+  if (release) {
+    const products = release.data.versions.map((v) => {
+      const p = release.data.products.find(
+        (p) => p.product_id === v.product_id,
+      )!;
+      const path = knowledgePath(release.id, "products", p.product_id);
+      return {
+        choice: { name: p.product_code, version: v.version, path },
+        root: { id: "", path },
+        paths: release.data.saleItems
+          .filter((s) => s.product_version_id === v.product_version_id)
+          .map((s) => knowledgePath(release.id, "sale-items", s.sale_item_id)),
+      };
+    });
+    return searchStructured(
+      db,
+      projectId,
+      runId,
+      release,
+      { scopeRevision: scope.revision, products },
+      input.requirementId,
+      input.query,
+      input.topK,
+      undefined,
+      { reason: input.reason, explanation: input.explanation },
+    );
+  }
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);
   const result = await wiki.search(wikiId, input.query, input.topK);
   await audit(db, projectId, null, runId, "product_global_search", {
@@ -672,6 +842,22 @@ export async function validateCatalogSale(
   page: Page,
   itemVersion: string,
 ) {
+  const release = await projectKnowledge(db, projectId);
+  if (release) {
+    const { version } = knowledgeChoice(release, choice);
+    const sale = release.data.saleItems.find(
+      (s) =>
+        knowledgePath(release.id, "sale-items", s.sale_item_id) === page.path,
+    );
+    if (
+      !sale ||
+      sale.product_version_id !== version.product_version_id ||
+      !sameVersion(version.version, itemVersion) ||
+      saleMarkdown(release, sale) !== page.content
+    )
+      throw new AppError(422, "销售项或证据不属于本项目固定发布版本");
+    return;
+  }
   const entity = parseSaleEntity(page.content);
   if (entity.product && !aliases(choice).includes(entity.product))
     throw new AppError(422, "销售项所属产品与本条评估产品不一致");

@@ -2,6 +2,7 @@ import { PGlite } from "@electric-sql/pglite";
 import { Pool } from "pg";
 import { resolve } from "node:path";
 import { config } from "./config.js";
+import { migrateProductKnowledge } from "./product-knowledge.js";
 export interface Database {
   query<T = Record<string, unknown>>(
     sql: string,
@@ -128,6 +129,7 @@ export async function migrate(db: Database) {
       "INSERT INTO schema_migrations(version) VALUES(5) ON CONFLICT DO NOTHING",
     );
   });
+  await migrateProductKnowledge(db);
 }
 export async function audit(
   db: Database,

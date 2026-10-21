@@ -7,6 +7,12 @@ import {
   sameVersion,
   resolveProductPage,
 } from "./product-search.js";
+import {
+  projectKnowledge,
+  knowledgeChoice,
+  materializeProduct,
+  knowledgePath,
+} from "./structured-knowledge.js";
 import { overviewProduct } from "./product-overview.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import {
@@ -20,6 +26,7 @@ export async function productScope(
   db: Database,
   projectId: string,
 ): Promise<ProductScope> {
+  const release = await projectKnowledge(db, projectId);
   const [row] = await db.query<ProductScope>(
     "SELECT revision,status,recommendations,selected,strategy,confirmed_by FROM product_scopes WHERE project_id=$1",
     [projectId],
@@ -39,6 +46,9 @@ export async function productScope(
   return row
     ? {
         ...row,
+        knowledgeRelease: release
+          ? { id: release.id, name: release.name }
+          : undefined,
         recommendations: row.recommendations.map((p) => {
           const info = overview
             ? overviewProduct(overview.content, p)
@@ -195,17 +205,6 @@ export async function selectProducts(
   input: unknown,
 ) {
   const value = selectionSchema.parse(input);
-  for (const selected of value.selected) {
-    if (!selected.path || selected.path.includes("/versions/")) {
-      const product = await resolveProductPage(db, projectId, selected);
-      if (product) selected.path = product.path;
-    }
-  }
-  if (
-    new Set(value.selected.map((c) => c.name + "@" + c.version)).size !==
-    value.selected.length
-  )
-    throw new AppError(422, "选择的产品不能重复");
   return db.transaction(async (tx) => {
     await tx.query("SELECT id FROM projects WHERE id=$1 FOR UPDATE", [
       projectId,
@@ -225,6 +224,31 @@ export async function selectProducts(
         409,
         "请等待 Agent 本轮结束后再确认产品，避免执行期间切换范围",
       );
+
+    const release = await projectKnowledge(tx, projectId, true);
+    for (const selected of value.selected) {
+      if (release) {
+        const { product, version } = knowledgeChoice(release, selected);
+        selected.name = product.product_code;
+        selected.version = version.version;
+        selected.path = knowledgePath(
+          release.id,
+          "products",
+          product.product_id,
+        );
+        await materializeProduct(tx, projectId, release, selected);
+        continue;
+      }
+      if (!selected.path || selected.path.includes("/versions/")) {
+        const product = await resolveProductPage(tx, projectId, selected);
+        if (product) selected.path = product.path;
+      }
+    }
+    if (
+      new Set(value.selected.map((c) => c.name + "@" + c.version)).size !==
+      value.selected.length
+    )
+      throw new AppError(422, "选择的产品不能重复");
     const [existing] = await tx.query(
       "SELECT id FROM assessments WHERE project_id=$1 LIMIT 1",
       [projectId],
