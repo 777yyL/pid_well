@@ -71,10 +71,10 @@ export class WikiClient {
       throw new AppError(422, "知识库文件清单被截断，无法安全解析裸名链接");
     return wikiFilePaths(result);
   }
-  search(projectId: string, query: string, topK = 5) {
+  search(projectId: string, query: string, topK = 5, includeContent = true) {
     return this.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/search`,
-      { query, topK, includeContent: true },
+      { query, topK, includeContent },
     );
   }
   graph(projectId: string, query: string, options: { limit?: number; nodeType?: string } = {}) {

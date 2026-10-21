@@ -4,7 +4,12 @@ import { parse as parseYaml } from "yaml";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
-import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
+import {
+  WikiClient,
+  snapshotPage,
+  wikiFilePaths,
+  PRODUCT_OVERVIEW_PATH,
+} from "./wiki.js";
 import { parseSaleEntity } from "./sale-entity.js";
 import { retrievalTokens } from "../shared/retrieval.js";
 import { productScope } from "./product-scope.js";
@@ -312,7 +317,9 @@ export async function searchSelected(
   topK: number,
   signal?: AbortSignal,
   subrequirementId?: string,
+  recallCache = new Map<string, Promise<Record<string, unknown>>>(),
 ) {
+  const started = Date.now();
   await requireClause(db, projectId, requirementId);
   if (subrequirementId) {
     const [r] = await db.query<{
@@ -326,20 +333,60 @@ export async function searchSelected(
   }
   const catalog = await selectedCatalog(db, projectId, runId, signal);
   const paths = [...new Set(catalog.products.flatMap((p) => p.paths))];
-  const seen = await db.query<{ path: string }>(
-    "SELECT DISTINCT data->>'path' AS path FROM audit_log WHERE project_id=$1 AND action='catalog_page_read' AND (data->>'scopeRevision')::int=$2",
-    [projectId, catalog.scopeRevision],
-  );
-  const read = new Set(seen.map((p) => p.path));
-  if (paths.some((p) => !read.has(p)))
-    throw new AppError(
-      409,
-      "请先用 wiki_product_catalog 分页读取完整销售项目录，再进行产品内检索；禁止直接全局搜索",
-    );
+  const { wiki, wikiId } = await boundWiki(db, projectId, signal);
+  // Search only nominates candidates. Full pages below provide the evidence;
+  // membership and version checks still use the selected product directory.
+  let recall = recallCache.get(query);
+  if (!recall) {
+    recall = wiki.search(wikiId, query, 50, false);
+    recallCache.set(query, recall);
+  }
+  const response = await recall;
+  if (!Array.isArray(response.results))
+    throw new AppError(502, "知识库搜索响应缺少 results 字段，不能视为未命中");
+  const allowed = new Set(paths);
+  const recalledPaths = [
+    ...new Set(
+      response.results.flatMap((hit: unknown) => {
+        if (!hit || typeof hit !== "object") return [];
+        const h = hit as Record<string, unknown>;
+        return wikiFilePaths(h.path ?? h.filePath ?? h.file_path);
+      }),
+    ),
+  ];
+  if (response.results.length && !recalledPaths.length)
+    throw new AppError(502, "知识库搜索结果缺少可识别路径，不能视为未命中");
+  const recalledCandidates = recalledPaths.filter((p) => allowed.has(p));
+  const candidates: string[] = [];
   const pages = await db.query<Page>(
     "SELECT DISTINCT ON(path) id,path,content FROM snapshots WHERE project_id=$1 ORDER BY path,created_at DESC",
     [projectId],
   );
+  const cachedPages = new Map(pages.map((page) => [page.path, page]));
+  let entityReads = 0;
+  for (const path of recalledCandidates) {
+    signal?.throwIfAborted();
+    let page = cachedPages.get(path);
+    if (!page) {
+      entityReads++;
+      page = await snapshotPage(
+        db,
+        projectId,
+        path,
+        await wiki.read(wikiId, path),
+      );
+      pages.push(page);
+      cachedPages.set(path, page);
+    }
+    if (
+      !catalog.products.some(
+        (p) => p.paths.includes(path) && belongs(page, p.choice),
+      )
+    )
+      continue;
+    candidates.push(path);
+    if (candidates.length >= Math.min(20, Math.max(5, topK * 2))) break;
+  }
   const tokens = retrievalTokens(query);
   const hits = pages
     .flatMap((page) => {
@@ -363,7 +410,7 @@ export async function searchSelected(
             : 0),
         0,
       );
-      return score
+      return score || candidates.includes(page.path)
         ? [
             {
               path: page.path,
@@ -371,6 +418,8 @@ export async function searchSelected(
               sales: entity.title,
               products: owners.map((p) => p.choice),
               score,
+              moduleId: entity.moduleId,
+              pageContent: page.content,
             },
           ]
         : [];
@@ -390,6 +439,10 @@ export async function searchSelected(
       matchCount: hits.length,
       paths: hits.slice(0, topK).map((h) => h.path),
       directoryEmpty: !paths.length,
+      elapsedMs: Date.now() - started,
+      recallLimit: 50,
+      candidates: candidates.length,
+      entityReads,
     },
   );
   return {
@@ -399,10 +452,91 @@ export async function searchSelected(
     requirementId,
     scopeRevision: catalog.scopeRevision,
     total: hits.length,
-    results: hits.slice(0, topK),
-    note: "仅已选产品目录内、所属产品及版本一致的正式销售项；候选相关不等于满足，仍需 wiki_read 核实原文与规格",
+    results: hits.slice(0, topK).map(({ pageContent, ...hit }) => ({
+      ...hit,
+      ...evidenceExcerpts(pageContent, tokens),
+    })),
+    elapsedMs: Date.now() - started,
+    recallComplete: false,
+    note: "已按产品页目录及版本过滤，excerpts 来自实体快照，可直接引用；片段不足再 wiki_read。召回有数量限制，未命中不证明不支持，应换关键词或记录原因补查。分数仅表示相关性。",
   };
 }
+function evidenceExcerpts(content: string, tokens: string[]) {
+  const lines = content.split(/\r?\n/);
+  const ranges: {
+    lineStart: number;
+    lineEnd: number;
+    quote: string;
+    truncated: boolean;
+  }[] = [];
+  const matches = lines.flatMap((line, i) =>
+    tokens.some((t) => line.toLowerCase().includes(t)) ? [i] : [],
+  );
+  for (const index of matches.length ? matches : [0]) {
+    if (ranges.some((r) => index + 1 >= r.lineStart && index + 1 <= r.lineEnd))
+      continue;
+    const start = Math.max(0, index - 2),
+      end = Math.min(lines.length, index + 7);
+    const quote = lines.slice(start, end).join("\n");
+    ranges.push({
+      lineStart: start + 1,
+      lineEnd: end,
+      quote: quote.slice(0, 1200),
+      truncated: quote.length > 1200,
+    });
+    if (ranges.length === 3) break;
+  }
+  return { totalLines: lines.length, excerpts: ranges };
+}
+
+export async function searchSelectedBatch(
+  db: Database,
+  projectId: string,
+  runId: string,
+  queries: {
+    requirementId: string;
+    subrequirementId?: string;
+    query: string;
+    topK: number;
+  }[],
+  signal?: AbortSignal,
+) {
+  const started = Date.now();
+  const recallCache = new Map<string, Promise<Record<string, unknown>>>();
+  const results = [];
+  for (const input of queries) {
+    signal?.throwIfAborted();
+    try {
+      results.push({
+        ...input,
+        result: await searchSelected(
+          db,
+          projectId,
+          runId,
+          input.requirementId,
+          input.query,
+          input.topK,
+          signal,
+          input.subrequirementId,
+          recallCache,
+        ),
+      });
+    } catch (error) {
+      signal?.throwIfAborted();
+      results.push({
+        ...input,
+        error: error instanceof Error ? error.message : "检索失败",
+        retryRequired: true,
+      });
+    }
+  }
+  return {
+    results,
+    elapsedMs: Date.now() - started,
+    note: "逐条结果保留独立 traceId，失败项没有未命中结论；按条款分别核实，不得将同批证据自动套用。",
+  };
+}
+
 export async function searchGlobalFallback(
   db: Database,
   projectId: string,
@@ -556,6 +690,27 @@ export async function validateCatalogSale(
     [projectId],
   );
   if (!root) throw new AppError(422, "请先读取所选产品页");
+  // A verified catalog is tied to an immutable product snapshot and scope revision.
+  // Reuse it during per-evidence validation instead of fetching the entire file tree.
+  const scope = await productScope(db, projectId);
+  const [cached] = await db.query<{ data: Catalog }>(
+    "SELECT data FROM audit_log WHERE project_id=$1 AND action='product_catalog' AND (data->>'scopeRevision')::int=$2 ORDER BY id DESC LIMIT 1",
+    [projectId, scope.revision],
+  );
+  const catalogProduct =
+    cached?.data.parserVersion === 4
+      ? cached.data.products.find(
+          (p) =>
+            p.root.id === root.id &&
+            p.choice.path === choice.path &&
+            sameVersion(p.choice.version, choice.version),
+        )
+      : undefined;
+  if (catalogProduct) {
+    if (!catalogProduct.paths.includes(page.path) || !belongs(page, choice))
+      throw new AppError(422, "销售项不属于所选产品版本目录");
+    return;
+  }
   const list = productVersionList(root.content, choice.version);
   const { wiki, wikiId } = await boundWiki(db, projectId);
   const filePaths = /\[\[[^\]/#|]+(?:[#|][^\]]*)?\]\]/.test(list)

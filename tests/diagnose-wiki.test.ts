@@ -43,6 +43,8 @@ test("Wiki 诊断脚本运行真实工具并输出报告，凭据不进入报告
         res.statusCode = 404;
         res.end("{}");
       }
+    } else if (url.pathname.endsWith("/search") && req.method === "POST") {
+      res.end(JSON.stringify({ results: [{ path: sale }] }));
     } else {
       res.statusCode = 404;
       res.end("{}");

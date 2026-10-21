@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createTools } from "../server/tools.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { openDatabase, migrate } from "../server/db.js";
@@ -6,6 +7,7 @@ import { WikiClient, snapshotPage, wikiFilePaths } from "../server/wiki.js";
 import {
   readCatalogPage,
   searchSelected,
+  searchSelectedBatch,
   searchGlobalFallback,
   recordAlternative,
   linkedWikiPaths,
@@ -282,16 +284,30 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
     [pageB]:
       "---\ntype: sale-item\ntitle: 视频管理\nproduct: 产品B\nversion: v2\nmodule_id: VMS\n---\n支持视频联动",
   };
+  // Large directories must not force reads of unrelated entities before matching.
+  for (let i = 0; i < 100; i++) {
+    const path = `wiki/entities/sale-items/unused-${i}.md`;
+    pages[a.path] += `\n[其他模块${i}](../sale-items/unused-${i}.md)`;
+    pages[path] =
+      `---\ntype: sale-item\ntitle: 其他模块${i}\nproduct: 产品A\nversion: v1\nmodule_id: UNUSED-${i}\n---\n辅助能力`;
+  }
   const originalRead = WikiClient.prototype.read,
     originalSearch = WikiClient.prototype.search;
   let globalCalls = 0;
+  const readPaths: string[] = [];
   WikiClient.prototype.read = async (_id, path) => {
+    readPaths.push(path);
     assert.ok(pages[path], path);
     return pages[path];
   };
-  WikiClient.prototype.search = async () => {
+  WikiClient.prototype.search = async (_id, query) => {
     globalCalls++;
-    return { results: [{ path: pageB }] };
+    return {
+      results: [
+        { path: pageB },
+        ...(query === "门禁" ? [{ path: pageA }] : []),
+      ],
+    };
   };
   try {
     await db.query(
@@ -330,19 +346,141 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
       searchGlobalFallback(db, pid, rid, fallback),
       /尚未完成产品内/,
     );
-    await assert.rejects(
-      searchSelected(db, pid, rid, "T-1", "视频", 5),
-      /完整销售项目录/,
+    const first = await searchSelected(db, pid, rid, "T-2", "门禁", 5);
+    assert.equal(first.results[0].sales, "门禁管理");
+    assert.ok(
+      first.results[0].excerpts.some((e) => e.quote.includes("支持门禁认证")),
     );
-    assert.equal(globalCalls, 0);
+    assert.equal(readPaths.filter((p) => p === pageA).length, 1);
+    assert.ok(!readPaths.includes(pageB), "范围外候选不得读取");
+    assert.ok(
+      !readPaths.some((p) => p.includes("unused-")),
+      "100个无关销售项不得预读",
+    );
+    const wrongPath = "wiki/entities/sale-items/unused-0.md";
+    pages[wrongPath] = pages[wrongPath].replace("version: v1", "version: v9");
+    WikiClient.prototype.search = async () => ({
+      results: [{ path: wrongPath }],
+    });
+    const wrongVersion = await searchSelected(db, pid, rid, "T-1", "辅助", 3);
+    assert.equal(
+      wrongVersion.results.length,
+      0,
+      "目录内实体版本不符也不能命中",
+    );
+    const stalePaths = Array.from(
+      { length: 6 },
+      (_, i) => `wiki/entities/sale-items/unused-${i}.md`,
+    );
+    stalePaths.forEach((path) => {
+      pages[path] = pages[path].replace("version: v1", "version: v9");
+    });
+    const validTail = "wiki/entities/sale-items/unused-6.md";
+    pages[validTail] += "\n支持尾部能力";
+    WikiClient.prototype.search = async () => ({
+      results: [...stalePaths, validTail].map((path) => ({ path })),
+    });
+    const validAfterStale = await searchSelected(
+      db,
+      pid,
+      rid,
+      "T-1",
+      "尾部能力",
+      3,
+    );
+    assert.equal(
+      validAfterStale.results[0]?.path,
+      validTail,
+      "无效版本不能占用有效候选配额，截掉后续正确结果",
+    );
+    WikiClient.prototype.search = async () => ({
+      results: [{ title: "缺少路径" }],
+    });
+    await assert.rejects(
+      searchSelected(db, pid, rid, "T-1", "辅助", 3),
+      /缺少可识别路径/,
+    );
+    const beforeError = await db.query(
+      "SELECT id FROM audit_log WHERE project_id=$1 AND action='product_scoped_search'",
+      [pid],
+    );
+    WikiClient.prototype.search = async () => {
+      throw new Error("接口不可用");
+    };
+    const failedBatch = await searchSelectedBatch(db, pid, rid, [
+      { requirementId: "T-1", query: "网络错误", topK: 3 },
+      { requirementId: "T-999", query: "未确认条款", topK: 3 },
+    ]);
+    assert.equal(failedBatch.results.filter((r) => "error" in r).length, 2);
+    const afterError = await db.query(
+      "SELECT id FROM audit_log WHERE project_id=$1 AND action='product_scoped_search'",
+      [pid],
+    );
+    assert.equal(
+      afterError.length,
+      beforeError.length,
+      "接口或条款失败不能登记为完成检索",
+    );
+    WikiClient.prototype.search = async (_id, query) => {
+      globalCalls++;
+      return {
+        results: [
+          { path: pageB },
+          ...(query === "门禁" ? [{ path: pageA }] : []),
+        ],
+      };
+    };
+    const batchCalls = globalCalls;
+    const batch = await searchSelectedBatch(db, pid, rid, [
+      { requirementId: "T-999", query: "门禁", topK: 5 },
+      { requirementId: "T-1", query: "门禁", topK: 5 },
+      { requirementId: "T-2", query: "门禁", topK: 5 },
+    ]);
+    assert.equal(batch.results.length, 3);
+    assert.ok("error" in batch.results[0]);
+    assert.ok("result" in batch.results[2]);
+    assert.equal(globalCalls - batchCalls, 1, "同一批相同查询只召回一次");
+    assert.equal(
+      readPaths.filter((p) => p === pageA).length,
+      1,
+      "不可变快照重复取证不回源",
+    );
+    const tools = createTools({
+      db,
+      projectId: pid,
+      runId: rid,
+      conversationId: cid,
+      userId: uid,
+      emit: async () => {},
+    });
+    const contextTool = tools.find((t) => t.name === "project_context")!;
+    const contextResponse = await contextTool.execute("context", {});
+    const contextText = contextResponse.content.find((p) => p.type === "text");
+    assert.ok(contextText?.type === "text");
+    assert.ok(Array.isArray(JSON.parse(contextText.text).performance));
+    await assert.rejects(contextTool.execute("invalid", { count: 1000 }));
+    const timings = await db.query<{
+      data: {
+        tool: string;
+        ok: boolean;
+        elapsedMs: number;
+        resultBytes: number;
+      };
+    }>(
+      "SELECT data FROM audit_log WHERE project_id=$1 AND action='tool_timing' ORDER BY id",
+      [pid],
+    );
+    assert.equal(timings.length, 2);
+    assert.equal(timings[0].data.ok, true);
+    assert.ok(timings[0].data.resultBytes > 0);
+    assert.equal(timings[1].data.ok, false);
+    assert.ok(timings.every((t) => t.data.elapsedMs >= 0));
     const catalog = await readCatalogPage(db, pid, rid, 0, 25);
-    assert.equal(catalog.complete, true);
+    assert.equal(catalog.complete, false);
     assert.equal(catalog.items[0].title, "门禁管理");
     const result = await searchSelected(db, pid, rid, "T-1", "视频", 5);
     assert.equal(result.total, 0);
-    assert.equal(globalCalls, 0);
     await searchGlobalFallback(db, pid, rid, fallback);
-    assert.equal(globalCalls, 1);
     await searchSelected(db, pid, rid, "T-2", "门禁", 5);
     await assert.rejects(
       searchGlobalFallback(db, pid, rid, { ...fallback, requirementId: "T-2" }),
@@ -423,16 +561,13 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
       "SELECT action FROM audit_log WHERE project_id=$1 AND action IN ('product_scoped_search','product_global_search','product_alternative') ORDER BY id",
       [pid],
     );
-    assert.deepEqual(
-      trace.map((r) => r.action),
-      [
-        "product_scoped_search",
-        "product_global_search",
-        "product_scoped_search",
-        "product_global_search",
-        "product_alternative",
-      ],
-    );
+    assert.deepEqual(trace.map((r) => r.action).slice(-5), [
+      "product_scoped_search",
+      "product_global_search",
+      "product_scoped_search",
+      "product_global_search",
+      "product_alternative",
+    ]);
   } finally {
     WikiClient.prototype.read = originalRead;
     WikiClient.prototype.search = originalSearch;

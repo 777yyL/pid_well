@@ -48,6 +48,8 @@ cd .pi/skills/llm-wiki && node llm-wiki.mjs read wiki/entities/products/<产品>
 
 **匹配前必须读取 `parse-report.md` 中的「项目建设背景」章节**，了解项目现状、建设性质、已有系统、集成要求、特殊约束。这些背景信息在判断"场景适配"（依据四）时作为关键参考。
 
+Web Agent 优先按业务模块使用 `wiki_search_batch`，每批最多5个已确认子要求，各自保留 traceId、snapshotId 与行号。无需预读全部实体；返回的原文片段足够时直接核验引用，不足再补读。重复销售项复用原文，不复用针对不同要求的判断。接口失败不能视为未命中。
+
 对每个招标功能点：
 
 1. 在产品页分类索引中定位业务分类

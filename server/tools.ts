@@ -29,6 +29,7 @@ import {
 import {
   readCatalogPage,
   searchSelected,
+  searchSelectedBatch,
   searchGlobalFallback,
   alternativeSchema,
   recordAlternative,
@@ -57,12 +58,25 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     parameters: z.toJSONSchema(schema) as TSchema,
     executionMode: "sequential",
     execute: async (_id, args, signal) => {
-      signal?.throwIfAborted();
-      const result = await handler(schema.parse(args), signal);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result) }],
-        details: {},
-      };
+      const started = Date.now();
+      let ok = false;
+      let resultBytes = 0;
+      try {
+        signal?.throwIfAborted();
+        const result = await handler(schema.parse(args), signal);
+        const text = JSON.stringify(result);
+        resultBytes = Buffer.byteLength(text);
+        ok = true;
+        return { content: [{ type: "text" as const, text }], details: {} };
+      } finally {
+        // Observability must not turn a completed write into a failed tool call.
+        await audit(db, projectId, ctx.userId, runId, "tool_timing", {
+          tool: name,
+          elapsedMs: Date.now() - started,
+          ok,
+          resultBytes,
+        }).catch(() => undefined);
+      }
     },
   });
   const readWiki = async (
@@ -130,8 +144,16 @@ export function createTools(ctx: ToolContext): AgentTool[] {
               "产品总览路径固定，直接调用 wiki_overview，无需搜索或猜测路径",
           },
           productScope: await productScope(db, projectId),
+          performance: await db.query(
+            "SELECT action,data->>'tool' AS tool,count(*)::int AS calls,sum((data->>'elapsedMs')::bigint)::float8 AS elapsed_ms,sum((data->>'resultBytes')::bigint)::float8 AS result_bytes,count(*) FILTER(WHERE data->>'ok'='false')::int AS failures FROM audit_log WHERE project_id=$1 AND run_id=$2 AND action='tool_timing' GROUP BY action,data->>'tool' ORDER BY elapsed_ms DESC",
+            [projectId, runId],
+          ),
+          modelPerformance: await db.query(
+            "SELECT count(*)::int AS turns,sum((data->>'elapsedMs')::bigint)::float8 AS elapsed_ms,sum((data->>'input')::bigint)::float8 AS input_tokens,sum((data->>'output')::bigint)::float8 AS output_tokens,sum((data->>'cacheRead')::bigint)::float8 AS cache_read_tokens FROM audit_log WHERE project_id=$1 AND run_id=$2 AND action='model_timing'",
+            [projectId, runId],
+          ),
           searchWorkflow:
-            "先 wiki_product_catalog 完整读取已选产品销售项目录，再 wiki_search(requirementId) 产品内检索；未命中或证据不足才能 wiki_global_search。范围外结果 record_product_alternative，等待用户加入范围。",
+            "确认产品后优先 wiki_search_batch 按模块批量检索（每批最多5个子要求），或 wiki_search 单条检索；自动从产品页建立范围、按需读取实体，不必先遍历 wiki_product_catalog。返回的快照片段可直接核实引用，不足再 wiki_read；未命中或证据不足才能 wiki_global_search。范围外结果 record_product_alternative，等待用户加入范围。",
           alternatives: await db.query(
             "SELECT id,data FROM audit_log WHERE project_id=$1 AND action='product_alternative' ORDER BY id DESC LIMIT 100",
             [projectId],
@@ -296,7 +318,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "wiki_search",
       "产品内检索销售项",
-      "确认产品后仅检索已选产品目录内的正式销售项，必须提供已确认 requirementId。先完整读取 wiki_product_catalog。可更换关键词多次查询；不会自动全局搜索。未选产品阶段仅用于核实产品身份。",
+      "确认产品后仅检索已选产品目录内的正式销售项，必须提供已确认 requirementId。无需预读全部实体。返回实体快照原文片段，可直接核实引用，不足再 wiki_read；未命中不等于不支持。可更换关键词多次查询；不会自动全局搜索。未选产品阶段仅用于核实产品身份。",
       z.object({
         subrequirementId: z.string().min(1).optional(),
         requirementId: z
@@ -343,6 +365,26 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             }
           : result;
       },
+    ),
+    tool(
+      "wiki_search_batch",
+      "批量检索产品内证据",
+      "按业务模块批量检索最多5个已确认子要求，自动按产品页及版本限制范围，只读取候选实体。相同查询与实体复用，逐项返回独立 traceId 和快照原文片段。失败项须处理，不能当作未命中；每条仍需独立判断与核验。片段不足再 wiki_read。",
+      z.object({
+        queries: z
+          .array(
+            z.object({
+              requirementId: z.string().regex(/^T-\d+$/),
+              subrequirementId: z.string().min(1).optional(),
+              query: z.string().trim().min(1).max(500),
+              topK: z.number().int().min(1).max(5).default(3),
+            }),
+          )
+          .min(1)
+          .max(5),
+      }),
+      (args, signal) =>
+        searchSelectedBatch(db, projectId, runId, args.queries, signal),
     ),
     tool(
       "wiki_global_search",
