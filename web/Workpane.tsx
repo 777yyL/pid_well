@@ -61,17 +61,20 @@ export function Workpane({
   events,
   onRefresh,
   uploadRef,
+  guideViewRef,
   onSend,
 }: {
   workspace: WorkspaceData;
   events: RunEvent[];
   onRefresh: () => Promise<void>;
   uploadRef: React.RefObject<(() => void) | null>;
+  guideViewRef: React.RefObject<((tab: string) => void) | null>;
   onSend: (text: string) => Promise<void>;
 }) {
   const { message } = AntApp.useApp();
   const fileInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState("requirements");
+  guideViewRef.current = setTab;
   const [knowledgePage, setKnowledgePage] = useState(1);
   const [knowledgeSearch, setKnowledgeSearch] = useState("");
   const [knowledge, setKnowledge] = useState<{
@@ -311,6 +314,7 @@ export function Workpane({
           <p>一个子系统一份文件，可一次选择多份；原文及行号分别保留。</p>
         </div>
         <Button
+          data-guide="upload"
           icon={<UploadOutlined />}
           loading={uploading}
           onClick={() => fileInput.current?.click()}
@@ -441,7 +445,7 @@ export function Workpane({
   );
   const reqs = (
     <div className="tab-content">
-      <div className="section-toolbar">
+      <div className="section-toolbar" data-guide="requirements">
         <div>
           <h3>原始技术条款</h3>
           <p>
@@ -455,6 +459,7 @@ export function Workpane({
             type="primary"
             icon={<CheckOutlined />}
             loading={busy}
+            data-guide="confirm-requirements"
             onClick={() => void confirm()}
           >
             {selected.length ? `确认 ${selected.length} 条` : "确认全部条款"}
@@ -529,6 +534,7 @@ export function Workpane({
   const assessments = (
     <div className="tab-content">
       <Alert
+        data-guide="results"
         type="info"
         showIcon
         message={`处理 ${results.length}/${workspace.requirements.length} 条；原文覆盖：${workspace.sourceCoverage?.map((d) => `${d.name} ${coverageLabel(d.status)}，未检查 ${d.uncheckedLines.length} 行`).join("；") || "待检查"}。未知项不计为满足。`}
@@ -621,7 +627,7 @@ export function Workpane({
           ),
         }}
       />
-      <div className="export-bar">
+      <div className="export-bar" data-guide="export">
         <div>
           <b>正式评估报告</b>
           <small>
@@ -654,7 +660,7 @@ export function Workpane({
           </Button>
         </Dropdown>
       </div>
-      <div className="share-entry">
+      <div className="share-entry" data-guide="share">
         <ShareDialog
           projectId={workspace.project.id}
           enabled={

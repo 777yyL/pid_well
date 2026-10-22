@@ -215,6 +215,7 @@ export function ProductSelection({
           <p>先基于整份清单比较产品，再按售前策略确定匹配范围。</p>
         </div>
         <Button
+          data-guide="recommend-products"
           loading={busy}
           disabled={active || locked || scope.status === "confirmed"}
           onClick={() => {
@@ -533,6 +534,7 @@ export function ProductSelection({
           <Checkbox.Group className="recommended-product-grid">
             {scope.recommendations.map((p) => (
               <article
+                data-guide="product-options"
                 key={key(p)}
                 className={`recommended-product-card ${selectedProducts.includes(key(p)) ? "selected" : ""}`}
               >
@@ -663,12 +665,14 @@ export function ProductSelection({
             type="primary"
             loading={busy}
             disabled={locked || active}
+            data-guide="confirm-products"
             onClick={() => void confirm()}
           >
             确认产品范围
           </Button>
           {scope.status === "confirmed" && (
             <Button
+              data-guide="continue"
               disabled={active || busy}
               onClick={() =>
                 void onSend(

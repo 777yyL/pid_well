@@ -36,6 +36,8 @@ import { ProjectModal } from "./ProjectModal";
 import { Team } from "./Team";
 import { Account } from "./Account";
 import { Chat } from "./Chat";
+import { WorkspaceGuide } from "./WorkspaceGuide";
+import { guidePhase } from "./workflow-guide";
 import { Workpane } from "./Workpane";
 import { SharedResult } from "./SharedResult";
 import { ProjectManager } from "./ProjectManager";
@@ -107,6 +109,7 @@ function WorkspaceShell({
   const [accountOpen, setAccountOpen] = useState(false);
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const upload = useRef<(() => void) | null>(null);
+  const guideView = useRef<((tab: string) => void) | null>(null);
   const [mobilePane, setMobilePane] = useState("chat");
   async function loadSettings() {
     try {
@@ -129,6 +132,26 @@ function WorkspaceShell({
   const conversation = state.workspace?.conversations.find(
     (c) => c.id === state.conversationId,
   );
+  const guideWorkspace = state.workspace;
+  const guideActive = !!state.activeRun || state.sending;
+  const phase = guideWorkspace
+    ? guidePhase({
+        documents: guideWorkspace.documents,
+        requirements: guideWorkspace.requirements,
+        assessments: guideWorkspace.assessments,
+        scopeStatus: guideWorkspace.productScope.status,
+        hasRecommendations:
+          guideWorkspace.productScope.recommendations.length > 0,
+        active: guideActive,
+        archived: !!guideWorkspace.project.archived_at,
+        complete:
+          guideWorkspace.requirements.length > 0 &&
+          guideWorkspace.assessments.length ===
+            guideWorkspace.requirements.length &&
+          guideWorkspace.assessments.every((r) => r.reviewed) &&
+          guideWorkspace.requirements.every((r) => r.confirmed),
+      })
+    : null;
   return (
     <div className={`workspace-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
@@ -331,8 +354,32 @@ function WorkspaceShell({
                 />
               </div>
               <div className="header-actions">
+                {state.workspace && (
+                  <WorkspaceGuide
+                    userId={user.id}
+                    projectId={state.workspace.project.id}
+                    phase={phase}
+                    enabled={
+                      !state.loading &&
+                      !guideActive &&
+                      !state.workspace.project.archived_at &&
+                      !settingsOpen &&
+                      !projectOpen &&
+                      !teamOpen &&
+                      !accountOpen
+                    }
+                    navigate={(tab) => {
+                      if (tab) {
+                        guideView.current?.(tab);
+                        setMobilePane("evidence");
+                      } else setMobilePane("chat");
+                    }}
+                  />
+                )}
+
                 <Tooltip title="拖动中间分隔条可调整宽度">
                   <Button
+                    className="workspace-reset-layout"
                     size="small"
                     onClick={() => {
                       setRatio(50);
@@ -462,6 +509,7 @@ function WorkspaceShell({
                     onRefresh={state.refresh}
                     onSend={state.send}
                     uploadRef={upload}
+                    guideViewRef={guideView}
                   />
                 </Splitter.Panel>
               </Splitter>

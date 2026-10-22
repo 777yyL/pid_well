@@ -1328,7 +1328,7 @@ a:focus-visible {
     height: 48px;
     padding: 0 13px;
   }
-  .header-actions > .ant-btn:first-of-type {
+  .header-actions > .workspace-reset-layout {
     display: none;
   }
   .breadcrumbs {
