@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import Fastify from "fastify";
+import { productKnowledgeSchema } from "../server/product-knowledge-schema.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "../server/db.js";
 import {
@@ -34,20 +35,25 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     project,
     admin,
   ]);
+  // Simulate business tables already imported by an external program.
+  for (const statement of productKnowledgeSchema) await db.query(statement);
+  await db.query("CREATE SCHEMA product_kb");
+  await db.query("CREATE TABLE product_kb.kb_products(product_id text)");
   await migrateProductKnowledge(db);
+  await db.query(
+    "INSERT INTO public.kb_products(product_id,product_code,name,status,source_path) VALUES('p','code','产品','active','wiki/entities/products/p.md')",
+  );
+  await db.query(
+    "INSERT INTO public.kb_product_versions(product_version_id,product_id,version,status) VALUES('v','p','v1','active')",
+  );
+  await db.query(
+    "INSERT INTO public.kb_categories(category_id,product_version_id,name) VALUES('c','v','分类')",
+  );
+  await db.query(
+    "INSERT INTO public.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,specification_md,status) VALUES('s','v','c','M1','模块一','原文','active'),('s2','v',NULL,'M2','模块二','完整原文','active')",
+  );
   await migrateProductKnowledge(db);
-  await db.query(
-    "INSERT INTO product_kb.kb_products(product_id,product_code,name,status,source_path) VALUES('p','code','产品','active','wiki/entities/products/p.md')",
-  );
-  await db.query(
-    "INSERT INTO product_kb.kb_product_versions(product_version_id,product_id,version,status) VALUES('v','p','v1','active')",
-  );
-  await db.query(
-    "INSERT INTO product_kb.kb_categories(category_id,product_version_id,name) VALUES('c','v','分类')",
-  );
-  await db.query(
-    "INSERT INTO product_kb.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,specification_md,status) VALUES('s','v','c','M1','模块一','原文','active'),('s2','v',NULL,'M2','模块二','完整原文','active')",
-  );
+  assert.equal((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM public.kb_sale_items"))[0].count, 2);
   const app = Fastify();
   app.decorateRequest("user", null);
   app.addHook("onRequest", async (request) => {
@@ -131,7 +137,7 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     404,
   );
   await db.query(
-    "UPDATE product_kb.kb_sale_items SET specification_md='修改' WHERE sale_item_id='s'",
+    "UPDATE public.kb_sale_items SET specification_md='修改' WHERE sale_item_id='s'",
   );
   assert.equal(
     (await latestKnowledge(db, "space"))?.data.saleItems[0].specification_md,
@@ -152,26 +158,26 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     403,
   );
   await db.query(
-    "UPDATE product_kb.kb_sale_items SET specification_md=NULL WHERE sale_item_id='s'",
+    "UPDATE public.kb_sale_items SET specification_md=NULL WHERE sale_item_id='s'",
   );
   const invalid = await publish();
   assert.equal(invalid.statusCode, 422);
   assert.match(invalid.json().issues.join(","), /完整技术规格/);
   await db.query(
-    "UPDATE product_kb.kb_sale_items SET specification_md='恢复' WHERE sale_item_id='s'",
+    "UPDATE public.kb_sale_items SET specification_md='恢复' WHERE sale_item_id='s'",
   );
   await db.query(
-    "INSERT INTO product_kb.kb_sale_dependencies(dependency_id,sale_item_id,depends_on_sale_item_id,dependency_type,source_note) VALUES('d1','s','s2','required','原始依赖'),('d2','s2','s','required','原始依赖')",
+    "INSERT INTO public.kb_sale_dependencies(dependency_id,sale_item_id,depends_on_sale_item_id,dependency_type,source_note) VALUES('d1','s','s2','required','原始依赖'),('d2','s2','s','required','原始依赖')",
   );
   const cyclic = await publish();
   assert.equal(cyclic.statusCode, 422);
   assert.match(cyclic.json().issues.join(","), /环路/);
-  await db.query("DELETE FROM product_kb.kb_sale_dependencies");
+  await db.query("DELETE FROM public.kb_sale_dependencies");
   await db.query(
-    "UPDATE product_kb.kb_sale_items SET status='draft' WHERE sale_item_id='s2'",
+    "UPDATE public.kb_sale_items SET status='draft' WHERE sale_item_id='s2'",
   );
   await db.query(
-    "INSERT INTO product_kb.kb_sale_dependencies(dependency_id,sale_item_id,depends_on_sale_item_id,dependency_type,source_note) VALUES('d3','s','s2','required','原始依赖')",
+    "INSERT INTO public.kb_sale_dependencies(dependency_id,sale_item_id,depends_on_sale_item_id,dependency_type,source_note) VALUES('d3','s','s2','required','原始依赖')",
   );
   const missing = await publish();
   assert.equal(missing.statusCode, 422);

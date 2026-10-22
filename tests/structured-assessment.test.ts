@@ -80,24 +80,24 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       ],
     );
     await db.query(
-      "INSERT INTO product_kb.kb_products(product_id,product_code,name,status) VALUES('p','产品A','产品名称','active')",
+      "INSERT INTO public.kb_products(product_id,product_code,name,status) VALUES('p','产品A','产品名称','active')",
     );
     await db.query(
-      "INSERT INTO product_kb.kb_product_versions(product_version_id,product_id,version,status) VALUES('v1','p','v1','active'),('v2','p','v2','active')",
+      "INSERT INTO public.kb_product_versions(product_version_id,product_id,version,status) VALUES('v1','p','v1','active'),('v2','p','v2','active')",
     );
     await db.query(
-      "INSERT INTO product_kb.kb_sale_items(sale_item_id,product_version_id,module_code,name,specification_md,unit,price_type,fixed_price,currency,status,source_path) VALUES('s1','v1','VIDEO','视频监控','支持实时预览','套','fixed',5000,'CNY','active','wiki/entities/sale-items/video-v1.md'),('s2','v2','VIDEO','视频监控','支持实时预览','套','fixed',7000,'CNY','active','wiki/entities/sale-items/video-v2.md')",
+      "INSERT INTO public.kb_sale_items(sale_item_id,product_version_id,module_code,name,specification_md,unit,price_type,fixed_price,currency,status,source_path) VALUES('s1','v1','VIDEO','视频监控','支持实时预览','套','fixed',5000,'CNY','active','wiki/entities/sale-items/video-v1.md'),('s2','v2','VIDEO','视频监控','支持实时预览','套','fixed',7000,'CNY','active','wiki/entities/sale-items/video-v2.md')",
     );
     const data: KnowledgeData = {
-      products: await db.query("SELECT * FROM product_kb.kb_products"),
-      versions: await db.query("SELECT * FROM product_kb.kb_product_versions"),
+      products: await db.query("SELECT * FROM public.kb_products"),
+      versions: await db.query("SELECT * FROM public.kb_product_versions"),
       categories: [],
-      saleItems: await db.query("SELECT * FROM product_kb.kb_sale_items"),
+      saleItems: await db.query("SELECT * FROM public.kb_sale_items"),
       dependencies: [],
     };
     const releaseId = randomUUID();
     await db.query(
-      "INSERT INTO product_kb.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'structured','首版',$2,$3)",
+      "INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'structured','首版',$2,$3)",
       [releaseId, JSON.stringify(data), uid],
     );
     const tools = createTools({
@@ -116,7 +116,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       next = structuredClone(data);
     next.saleItems[0].fixed_price = 9999;
     await db.query(
-      "INSERT INTO product_kb.kb_releases(id,wiki_project_id,name,data,created_by,created_at) VALUES($1,'structured','第二版',$2,$3,now()+interval '1 second')",
+      "INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by,created_at) VALUES($1,'structured','第二版',$2,$3,now()+interval '1 second')",
       [nextId, JSON.stringify(next), uid],
     );
     assert.equal((await projectKnowledge(db, pid, true))?.id, releaseId);

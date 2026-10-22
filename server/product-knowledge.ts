@@ -20,11 +20,11 @@ const tables = [
 export async function migrateProductKnowledge(db: Database) {
   await db.transaction(async (tx) => {
     const existing = await tx.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.tables WHERE table_schema='product_kb' AND table_name=ANY($1::text[])`,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name=ANY($1::text[])`,
       [tables],
     );
     if (existing.length && existing.length !== tables.length)
-      throw new Error("product_kb 业务表不完整，请先修复建表脚本");
+      throw new Error("public 业务表不完整，请先修复建表脚本");
     if (!existing.length)
       for (const statement of productKnowledgeSchema) await tx.query(statement);
     const expected: Record<string, string[]> = {
@@ -64,19 +64,19 @@ export async function migrateProductKnowledge(db: Database) {
       ],
     };
     const columns = await tx.query<{ table_name: string; column_name: string }>(
-      `SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='product_kb'`,
+      `SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public'`,
     );
     for (const [table, names] of Object.entries(expected))
       for (const name of names)
         if (
           !columns.some((c) => c.table_name === table && c.column_name === name)
         )
-          throw new Error(`product_kb 表结构不兼容：${table}.${name}`);
+          throw new Error(`public 表结构不兼容：${table}.${name}`);
     await tx.query(
-      `CREATE TABLE IF NOT EXISTS product_kb.kb_releases(id uuid PRIMARY KEY,wiki_project_id text NOT NULL,name text NOT NULL,data jsonb NOT NULL,created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now())`,
+      `CREATE TABLE IF NOT EXISTS public.kb_releases(id uuid PRIMARY KEY,wiki_project_id text NOT NULL,name text NOT NULL,data jsonb NOT NULL,created_by uuid REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now())`,
     );
     await tx.query(
-      `CREATE TABLE IF NOT EXISTS product_kb.kb_project_releases(project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,release_id uuid NOT NULL REFERENCES product_kb.kb_releases(id))`,
+      `CREATE TABLE IF NOT EXISTS public.kb_project_releases(project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,release_id uuid NOT NULL REFERENCES public.kb_releases(id))`,
     );
   });
 }
@@ -87,7 +87,7 @@ export async function getProjectKnowledge(
   return (
     (
       await db.query<KnowledgeRelease>(
-        `SELECT r.* FROM product_kb.kb_releases r JOIN product_kb.kb_project_releases b ON b.release_id=r.id WHERE b.project_id=$1`,
+        `SELECT r.* FROM public.kb_releases r JOIN public.kb_project_releases b ON b.release_id=r.id WHERE b.project_id=$1`,
         [projectId],
       )
     )[0] ?? null
@@ -100,7 +100,7 @@ export async function latestKnowledge(
   return (
     (
       await db.query<KnowledgeRelease>(
-        `SELECT * FROM product_kb.kb_releases WHERE wiki_project_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`,
+        `SELECT * FROM public.kb_releases WHERE wiki_project_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1`,
         [wikiProjectId],
       )
     )[0] ?? null
@@ -112,12 +112,12 @@ export async function bindProjectKnowledge(
   releaseId: string,
 ) {
   const [release] = await db.query(
-    `SELECT r.id FROM product_kb.kb_releases r JOIN projects p ON p.wiki_project_id=r.wiki_project_id WHERE p.id=$1 AND r.id=$2`,
+    `SELECT r.id FROM public.kb_releases r JOIN projects p ON p.wiki_project_id=r.wiki_project_id WHERE p.id=$1 AND r.id=$2`,
     [projectId, releaseId],
   );
   if (!release) throw new AppError(422, "发布版本不存在或不属于项目知识空间");
   await db.query(
-    `INSERT INTO product_kb.kb_project_releases(project_id,release_id) VALUES($1,$2) ON CONFLICT(project_id) DO NOTHING`,
+    `INSERT INTO public.kb_project_releases(project_id,release_id) VALUES($1,$2) ON CONFLICT(project_id) DO NOTHING`,
     [projectId, releaseId],
   );
   const bound = await getProjectKnowledge(db, projectId);
@@ -192,20 +192,20 @@ export function validateKnowledge(data: KnowledgeData): string[] {
 }
 async function readDraft(db: Database): Promise<KnowledgeData> {
   const products = await db.query<KnowledgeData["products"][number]>(
-    `SELECT * FROM product_kb.kb_products WHERE status='active' ORDER BY product_id`,
+    `SELECT * FROM public.kb_products WHERE status='active' ORDER BY product_id`,
   );
   const versions = await db.query<KnowledgeData["versions"][number]>(
-    `SELECT * FROM product_kb.kb_product_versions WHERE status='active' ORDER BY product_version_id`,
+    `SELECT * FROM public.kb_product_versions WHERE status='active' ORDER BY product_version_id`,
   );
   const categories = await db.query<KnowledgeData["categories"][number]>(
-    `SELECT * FROM product_kb.kb_categories WHERE product_version_id=ANY($1::text[]) ORDER BY sort_order,category_id`,
+    `SELECT * FROM public.kb_categories WHERE product_version_id=ANY($1::text[]) ORDER BY sort_order,category_id`,
     [versions.map((v) => v.product_version_id)],
   );
   const saleItems = await db.query<KnowledgeData["saleItems"][number]>(
-    `SELECT * FROM product_kb.kb_sale_items WHERE status='active' ORDER BY sale_item_id`,
+    `SELECT * FROM public.kb_sale_items WHERE status='active' ORDER BY sale_item_id`,
   );
   const dependencies = await db.query<KnowledgeData["dependencies"][number]>(
-    `SELECT * FROM product_kb.kb_sale_dependencies WHERE sale_item_id=ANY($1::text[]) ORDER BY dependency_id`,
+    `SELECT * FROM public.kb_sale_dependencies WHERE sale_item_id=ANY($1::text[]) ORDER BY dependency_id`,
     [saleItems.map((s) => s.sale_item_id)],
   );
   return { products, versions, categories, saleItems, dependencies };
@@ -225,7 +225,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
     const wiki = text((request.query as Record<string, unknown>).wikiProjectId);
     if (!wiki) throw new AppError(422, "缺少 wikiProjectId");
     const releases = await db.query(
-      `SELECT id,name,created_at,jsonb_array_length(data->'products') AS "productCount",jsonb_array_length(data->'saleItems') AS "saleCount" FROM product_kb.kb_releases WHERE wiki_project_id=$1 ORDER BY created_at DESC,id DESC`,
+      `SELECT id,name,created_at,jsonb_array_length(data->'products') AS "productCount",jsonb_array_length(data->'saleItems') AS "saleCount" FROM public.kb_releases WHERE wiki_project_id=$1 ORDER BY created_at DESC,id DESC`,
       [wiki],
     );
     const [counts] = await db.query<{
@@ -233,7 +233,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
       versions: number;
       saleItems: number;
     }>(
-      `SELECT (SELECT count(*)::int FROM product_kb.kb_products) products,(SELECT count(*)::int FROM product_kb.kb_product_versions) versions,(SELECT count(*)::int FROM product_kb.kb_sale_items) "saleItems"`,
+      `SELECT (SELECT count(*)::int FROM public.kb_products) products,(SELECT count(*)::int FROM public.kb_product_versions) versions,(SELECT count(*)::int FROM public.kb_sale_items) "saleItems"`,
     );
     return { releases, draftCounts: counts };
   });
@@ -254,7 +254,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
           .send({ error: "知识库校验失败：" + issues.join("；"), issues });
       const id = randomUUID();
       const [release] = await tx.query<KnowledgeRelease>(
-        `INSERT INTO product_kb.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING *`,
+        `INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING *`,
         [id, wiki, name, JSON.stringify(data), user.id],
       );
       return reply.code(201).send({ release });
@@ -400,7 +400,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
       (releaseId
         ? (
             await db.query<KnowledgeRelease>(
-              `SELECT * FROM product_kb.kb_releases WHERE id=$1 AND wiki_project_id=$2`,
+              `SELECT * FROM public.kb_releases WHERE id=$1 AND wiki_project_id=$2`,
               [releaseId, project.wiki_project_id],
             )
           )[0]

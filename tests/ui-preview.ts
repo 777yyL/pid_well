@@ -59,14 +59,14 @@ if (process.env.QA_KNOWLEDGE === "true") {
   const { projectKnowledge, overviewMarkdown } =
     await import("../server/structured-knowledge.js");
   await db.query(
-    "INSERT INTO product_kb.kb_products(product_id,product_code,name,product_line,department,owner,summary,status,source_path) VALUES('isc','iSecure Center','综合安防管理平台','综合安防软件','综合安防产品部','产品维护人','面向园区的综合安防管理，覆盖视频应用、人员通行及基础服务。','active','wiki/entities/products/isc.md')",
+    "INSERT INTO public.kb_products(product_id,product_code,name,product_line,department,owner,summary,status,source_path) VALUES('isc','iSecure Center','综合安防管理平台','综合安防软件','综合安防产品部','产品维护人','面向园区的综合安防管理，覆盖视频应用、人员通行及基础服务。','active','wiki/entities/products/isc.md')",
   );
   await db.query(
-    "INSERT INTO product_kb.kb_product_versions(product_version_id,product_id,version,status) VALUES('v1','isc','v1.0.0','active'),('v2','isc','v2.0.0','active')",
+    "INSERT INTO public.kb_product_versions(product_version_id,product_id,version,status) VALUES('v1','isc','v1.0.0','active'),('v2','isc','v2.0.0','active')",
   );
   for (const [i, name] of ["智慧通行", "视频应用", "基础服务"].entries())
     await db.query(
-      "INSERT INTO product_kb.kb_categories(category_id,product_version_id,name,sort_order) VALUES($1,'v1',$2,$3)",
+      "INSERT INTO public.kb_categories(category_id,product_version_id,name,sort_order) VALUES($1,'v1',$2,$3)",
       ["c" + i, name, i],
     );
   const names = [
@@ -90,7 +90,7 @@ if (process.env.QA_KNOWLEDGE === "true") {
   ];
   for (const [i, name] of names.entries())
     await db.query(
-      "INSERT INTO product_kb.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,description,specification_md,unit,price_type,fixed_price,currency,mandatory,authorization_note,source_path,status) VALUES($1,'v1',$2,$3,$4,$5,$6,'套','fixed',$7,'CNY',false,'按实际部署核定授权，不默认跨产品共享',$8,'active')",
+      "INSERT INTO public.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,description,specification_md,unit,price_type,fixed_price,currency,mandatory,authorization_note,source_path,status) VALUES($1,'v1',$2,$3,$4,$5,$6,'套','fixed',$7,'CNY',false,'按实际部署核定授权，不默认跨产品共享',$8,'active')",
       [
         "sale" + i,
         "c" + (i < 7 ? 0 : i < 13 ? 1 : 2),
@@ -105,14 +105,14 @@ if (process.env.QA_KNOWLEDGE === "true") {
       ],
     );
   const data = {
-    products: await db.query("SELECT * FROM product_kb.kb_products"),
-    versions: await db.query("SELECT * FROM product_kb.kb_product_versions"),
-    categories: await db.query("SELECT * FROM product_kb.kb_categories"),
-    saleItems: await db.query("SELECT * FROM product_kb.kb_sale_items"),
+    products: await db.query("SELECT * FROM public.kb_products"),
+    versions: await db.query("SELECT * FROM public.kb_product_versions"),
+    categories: await db.query("SELECT * FROM public.kb_categories"),
+    saleItems: await db.query("SELECT * FROM public.kb_sale_items"),
     dependencies: [],
   };
   await db.query(
-    "INSERT INTO product_kb.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'ec087b7b-beb8-4e7d-920c-b6d169e58a9d','目录验证版',$2,$3)",
+    "INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'ec087b7b-beb8-4e7d-920c-b6d169e58a9d','目录验证版',$2,$3)",
     [randomUUID(), JSON.stringify(data), userId],
   );
   const release = await projectKnowledge(db, projectId, true);
