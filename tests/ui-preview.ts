@@ -104,6 +104,11 @@ if (process.env.QA_KNOWLEDGE === "true") {
         "wiki/entities/sale-items/sale" + i + ".md",
       ],
     );
+  if (process.env.QA_PUBLISH_WARNINGS === "true") {
+    await db.query(
+      "UPDATE public.kb_sale_items SET name='软件定制', module_code=NULL, specification_md=NULL WHERE sale_item_id=(SELECT sale_item_id FROM public.kb_sale_items ORDER BY sale_item_id LIMIT 1)",
+    );
+  }
   const data = {
     products: await db.query("SELECT * FROM public.kb_products"),
     versions: await db.query("SELECT * FROM public.kb_product_versions"),

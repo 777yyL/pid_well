@@ -224,6 +224,44 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
         },
       },
     };
+    const incomplete = structuredClone(pinned as KnowledgeRelease);
+    incomplete.data.saleItems[0].specification_md = null;
+    incomplete.data.saleItems[0].description = "支持实时预览";
+    const incompleteContent = saleMarkdown(
+      incomplete,
+      incomplete.data.saleItems[0],
+    );
+    await db.query("UPDATE public.kb_releases SET data=$2::jsonb WHERE id=$1", [
+      releaseId,
+      JSON.stringify(incomplete.data),
+    ]);
+    await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
+      hit.snapshotId,
+      incompleteContent,
+    ]);
+    const unsupported = structuredClone(item);
+    const descriptionLine =
+      incompleteContent.split("\n").findIndex((l) => l === "支持实时预览") + 1;
+    const unsupportedProof = {
+      ...proof,
+      lineStart: descriptionLine,
+      lineEnd: descriptionLine,
+    };
+    unsupported.evidence = [unsupportedProof];
+    unsupported.verification!.checks[0].evidence = [unsupportedProof];
+    unsupported.verification!.contributions[0].evidence = [unsupportedProof];
+    await assert.rejects(
+      saveAssessments(db, pid, [unsupported], {}),
+      /技术规格待确认/,
+    );
+    await db.query("UPDATE public.kb_releases SET data=$2::jsonb WHERE id=$1", [
+      releaseId,
+      JSON.stringify((pinned as KnowledgeRelease).data),
+    ]);
+    await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
+      hit.snapshotId,
+      content,
+    ]);
     await saveAssessments(db, pid, [item], {});
     const saved = (await assessmentRows(db, pid, 10, 0))[0];
     assert.equal(saved.knowledgeReleaseId, releaseId);

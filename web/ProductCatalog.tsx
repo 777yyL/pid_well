@@ -289,13 +289,25 @@ export function ProductCatalog({
             {detail.item.pricing_note && (
               <p className="muted">{detail.item.pricing_note}</p>
             )}
+            {!detail.item.specification_md?.trim() && (
+              <Alert
+                type="warning"
+                showIcon
+                message="技术规格待确认"
+                description="尚未提供完整技术规格，仅供定制或候选参考，不能据此判定完全满足。"
+              />
+            )}
             <section>
-              <h4>规格说明</h4>
+              <h4>
+                {detail.item.specification_md?.trim()
+                  ? "规格说明"
+                  : "销售项描述"}
+              </h4>
               <KnowledgeMarkdown
                 text={
                   detail.item.specification_md ||
                   detail.item.description ||
-                  "暂无规格说明"
+                  "暂无资料，请联系产品负责人确认"
                 }
               />
             </section>

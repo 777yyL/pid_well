@@ -218,6 +218,7 @@ export async function validateVerification(
   if (new Set(v.contributions.map((c) => c.id)).size !== v.contributions.length)
     throw new AppError(422, "贡献项编号不能重复");
   const scope = await productScope(db, projectId);
+  const knowledge = await projectKnowledge(db, projectId);
   const entities = new Map<string, ReturnType<typeof parseSaleEntity>>();
   for (const c of v.contributions) {
     const selected = scope.selected.find(
@@ -365,6 +366,15 @@ export async function validateVerification(
         [projectId, e.snapshotId],
       );
       if (check.level === "exact" && page) {
+        const entityId = parseSaleEntity(page.content).saleItemId;
+        const sale = knowledge?.data.saleItems.find(
+          (s) => s.sale_item_id === entityId,
+        );
+        if (sale && !sale.specification_md?.trim())
+          throw new AppError(
+            422,
+            `销售项 ${sale.name}（${sale.sale_item_id}）技术规格待确认，不能作为完全满足的能力证据`,
+          );
         const front = page.content.match(/^---\r?\n[\s\S]*?\r?\n---/);
         const frontLines = front?.[0].split(/\r?\n/).length ?? 0;
         const bodyQuote = e.quote

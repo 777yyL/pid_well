@@ -146,11 +146,16 @@ export function validateKnowledge(data: KnowledgeData): string[] {
     if (!validPath(v.source_path)) add(`版本 ${v.version} 来源路径不合法`);
   }
   for (const s of data.saleItems) {
+    const version = data.versions.find(
+      (v) => v.product_version_id === s.product_version_id,
+    );
+    const product = data.products.find(
+      (p) => p.product_id === version?.product_id,
+    );
+    const label = `${product?.product_code ?? "未知产品"} / ${version?.version ?? "未知版本"} / ${s.name}（${s.sale_item_id}）`;
     if (!versions.has(s.product_version_id))
-      add(`销售项 ${s.name} 的版本未启用`);
-    if (!s.module_code?.trim()) add(`销售项 ${s.name} 缺少模块编码`);
-    if (!s.specification_md?.trim()) add(`销售项 ${s.name} 缺少完整技术规格`);
-    if (!validPath(s.source_path)) add(`销售项 ${s.name} 来源路径不合法`);
+      add(`销售项 ${label} 的版本未启用`);
+    if (!validPath(s.source_path)) add(`销售项 ${label} 来源路径不合法`);
     if (
       s.category_id &&
       !data.categories.some(
@@ -159,7 +164,7 @@ export function validateKnowledge(data: KnowledgeData): string[] {
           c.product_version_id === s.product_version_id,
       )
     )
-      add(`销售项 ${s.name} 分类不属于其版本`);
+      add(`销售项 ${label} 分类不属于其版本`);
   }
   const edges = new Map<string, string[]>();
   for (const d of data.dependencies) {
@@ -189,6 +194,30 @@ export function validateKnowledge(data: KnowledgeData): string[] {
       break;
     }
   return issues.slice(0, 20);
+}
+export function knowledgeWarnings(data: KnowledgeData) {
+  return data.saleItems.flatMap((sale) => {
+    const missing = [
+      !sale.module_code?.trim() && "模块编码未提供",
+      !sale.specification_md?.trim() && "技术规格待确认",
+    ].filter(Boolean);
+    if (!missing.length) return [];
+    const version = data.versions.find(
+      (v) => v.product_version_id === sale.product_version_id,
+    );
+    const product = data.products.find(
+      (p) => p.product_id === version?.product_id,
+    );
+    return [
+      {
+        saleItemId: sale.sale_item_id,
+        product: product?.product_code ?? "未知产品",
+        version: version?.version ?? "未知版本",
+        sale: sale.name,
+        message: missing.join("；"),
+      },
+    ];
+  });
 }
 async function readDraft(db: Database): Promise<KnowledgeData> {
   const products = await db.query<KnowledgeData["products"][number]>(
@@ -257,7 +286,9 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
         `INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING *`,
         [id, wiki, name, JSON.stringify(data), user.id],
       );
-      return reply.code(201).send({ release });
+      return reply
+        .code(201)
+        .send({ release, warnings: knowledgeWarnings(data) });
     });
   });
   app.get("/api/projects/:id/knowledge/catalog", async (request) => {

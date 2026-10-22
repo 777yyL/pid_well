@@ -100,7 +100,15 @@ export function Settings({
       }
       open={open}
       onCancel={onClose}
-      width={640}
+      width={section === "wiki" ? 760 : 640}
+      style={{ top: 32 }}
+      styles={{
+        body: {
+          maxHeight: "calc(100dvh - 220px)",
+          overflowY: "auto",
+          paddingRight: 8,
+        },
+      }}
       footer={
         <>
           <Button onClick={onClose}>关闭</Button>

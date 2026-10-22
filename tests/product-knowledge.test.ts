@@ -53,7 +53,14 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     "INSERT INTO public.kb_sale_items(sale_item_id,product_version_id,category_id,module_code,name,specification_md,status) VALUES('s','v','c','M1','模块一','原文','active'),('s2','v',NULL,'M2','模块二','完整原文','active')",
   );
   await migrateProductKnowledge(db);
-  assert.equal((await db.query<{ count: number }>("SELECT count(*)::int AS count FROM public.kb_sale_items"))[0].count, 2);
+  assert.equal(
+    (
+      await db.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM public.kb_sale_items",
+      )
+    )[0].count,
+    2,
+  );
   const app = Fastify();
   app.decorateRequest("user", null);
   app.addHook("onRequest", async (request) => {
@@ -158,11 +165,17 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     403,
   );
   await db.query(
-    "UPDATE public.kb_sale_items SET specification_md=NULL WHERE sale_item_id='s'",
+    "UPDATE public.kb_sale_items SET specification_md=NULL,module_code=NULL WHERE sale_item_id='s'",
   );
   const invalid = await publish();
-  assert.equal(invalid.statusCode, 422);
-  assert.match(invalid.json().issues.join(","), /完整技术规格/);
+  assert.equal(invalid.statusCode, 201);
+  const warning = invalid
+    .json()
+    .warnings.find((w: any) => w.saleItemId === "s");
+  assert.equal(warning.product, "code");
+  assert.equal(warning.version, "v1");
+  assert.equal(warning.sale, "模块一");
+  assert.match(warning.message, /模块编码未提供.*技术规格待确认/);
   await db.query(
     "UPDATE public.kb_sale_items SET specification_md='恢复' WHERE sale_item_id='s'",
   );

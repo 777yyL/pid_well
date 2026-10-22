@@ -112,7 +112,7 @@ export function saleMarkdown(release: KnowledgeRelease, sale: KnowledgeSale) {
       .filter(Boolean)
       .join("；"),
     source_path: sale.source_path,
-  })}---\n# ${sale.name}\n\n> 结构化发布快照：${release.name}；来源路径：${sale.source_path ?? "未提供"}。此页为发布数据的固定渲染，非远端文件原文。\n\n## 销售项描述\n${sale.description ?? ""}\n\n## 技术规格\n${sale.specification_md ?? ""}\n\n## 授权说明\n${sale.authorization_note ?? "未核实"}\n\n## 使用前提\n${sale.prerequisites ?? "未核实"}\n\n## 限制条件\n${sale.limitations ?? "未核实"}\n\n## 依赖说明\n${sale.dependency_note ?? ""}\n${release.data.dependencies
+  })}---\n# ${sale.name}\n\n> 结构化发布快照：${release.name}；来源路径：${sale.source_path ?? "未提供"}。此页为发布数据的固定渲染，非远端文件原文。\n\n## 销售项描述\n${sale.description ?? ""}\n\n## 技术规格\n${sale.specification_md?.trim() || "技术规格待确认：本项仅供候选或定制参考，不能作为完全满足的能力证据。"}\n\n## 授权说明\n${sale.authorization_note ?? "未核实"}\n\n## 使用前提\n${sale.prerequisites ?? "未核实"}\n\n## 限制条件\n${sale.limitations ?? "未核实"}\n\n## 依赖说明\n${sale.dependency_note ?? ""}\n${release.data.dependencies
     .filter((d) => d.sale_item_id === sale.sale_item_id)
     .map(
       (d) =>
