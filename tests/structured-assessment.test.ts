@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createReport } from "../server/reports.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { openDatabase, migrate } from "../server/db.js";
 import { createTools } from "../server/tools.js";
 import {
@@ -292,6 +292,64 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
     assert.equal(summary.sales.length, 1);
     assert.equal(summary.sales[0].entity.price, 5000);
     assert.equal(summary.sales[0].requirements.size, 2);
+    const mutual = structuredClone(pinned as KnowledgeRelease);
+    mutual.data.saleItems[1].product_version_id = "v1";
+    mutual.data.saleItems[1].name = "音频采集终端管理";
+    mutual.data.dependencies = [
+      {
+        dependency_id: "a-b",
+        sale_item_id: "s1",
+        depends_on_sale_item_id: "s2",
+        dependency_type: "required",
+        condition_note: null,
+        source_note: "原文必选",
+      },
+      {
+        dependency_id: "b-a",
+        sale_item_id: "s2",
+        depends_on_sale_item_id: "s1",
+        dependency_type: "required",
+        condition_note: null,
+        source_note: "原文必选",
+      },
+    ];
+    const mutualPages = mutual.data.saleItems.map((sale) => {
+      const content = saleMarkdown(mutual, sale);
+      return {
+        id: randomUUID(),
+        path: knowledgePath(mutual.id, "sale-items", sale.sale_item_id),
+        content,
+        hash: createHash("sha256").update(content).digest("hex"),
+      };
+    });
+    const mutualRows = mutual.data.saleItems.map((sale, i) => ({
+      ...saved,
+      verification: undefined,
+      sales: [sale.name],
+      version: "v1",
+      evidence: [{ ...proof, snapshotId: mutualPages[i].id }],
+    }));
+    const mutualSummary = summarizeSales(
+      [...mutualRows, ...mutualRows],
+      mutualPages,
+    );
+    assert.equal(
+      mutualSummary.sales.length,
+      2,
+      "互相依赖应保留两项，重复引用按稳定ID去重",
+    );
+    assert.equal(
+      mutualSummary.issues.length,
+      0,
+      "双方均已列入时不应报缺失依赖",
+    );
+    assert.ok(
+      summarizeSales(mutualRows.slice(0, 1), mutualPages).issues.some((s) =>
+        s.includes("尚未列入"),
+      ),
+      "互相依赖不能免除另一项的交付要求",
+    );
+
     const secondItem = structuredClone(item);
     secondItem.requirementId = "T-2";
     secondItem.verification!.checks[0].subrequirementId = "T-2.1";

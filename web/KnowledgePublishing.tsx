@@ -192,7 +192,7 @@ export function KnowledgePublishing() {
               </div>
               <p className="kp-note">
                 仅发布 active
-                数据。编码或规格缺失会提示警告，关联错误仍会阻止发布。
+                数据。编码、规格缺失或互相依赖会提示警告；自依赖、失效关联仍会阻止发布。
               </p>
             </div>
           </>
@@ -219,7 +219,7 @@ export function KnowledgePublishing() {
         <Alert
           type="warning"
           showIcon
-          message={`发布成功，${warnings.length} 个销售项资料待完善`}
+          message={`发布成功，${warnings.length} 个销售项需核实`}
           description={
             <details>
               <summary>查看具体产品与销售项</summary>
@@ -234,7 +234,9 @@ export function KnowledgePublishing() {
                   </li>
                 ))}
               </ul>
-              <p>缺少技术规格的销售项不能作为完全满足的能力证据。</p>
+              <p>
+                缺少技术规格不能作为完全满足的能力证据；互相依赖保留独立销售项，按原始关系核实组合与授权。
+              </p>
             </details>
           }
         />

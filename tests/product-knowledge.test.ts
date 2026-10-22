@@ -4,6 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import Fastify from "fastify";
 import { productKnowledgeSchema } from "../server/product-knowledge-schema.js";
 import { createHash, randomUUID } from "node:crypto";
+import type { KnowledgeData } from "../shared/product-knowledge.js";
 import type { Database } from "../server/db.js";
 import {
   migrateProductKnowledge,
@@ -11,9 +12,12 @@ import {
   getProjectKnowledge,
   bindProjectKnowledge,
   latestKnowledge,
+  dependencyGroups,
+  knowledgeWarnings,
+  validateKnowledge,
 } from "../server/product-knowledge.js";
 
-test("knowledge publishes immutable snapshots, scopes access, browses pages and rejects incomplete drafts", async () => {
+test("knowledge publishes immutable snapshots, scopes access, browses pages, warns on incomplete data and rejects invalid relations", async () => {
   const engine = new PGlite();
   await engine.waitReady;
   const wrap = (client: any): Database => ({
@@ -183,8 +187,65 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages and 
     "INSERT INTO public.kb_sale_dependencies(dependency_id,sale_item_id,depends_on_sale_item_id,dependency_type,source_note) VALUES('d1','s','s2','required','原始依赖'),('d2','s2','s','required','原始依赖')",
   );
   const cyclic = await publish();
-  assert.equal(cyclic.statusCode, 422);
-  assert.match(cyclic.json().issues.join(","), /环路/);
+  assert.equal(cyclic.statusCode, 201);
+  assert.equal(cyclic.json().release.data.dependencies.length, 2);
+  for (const id of ["s", "s2"]) {
+    const warning = cyclic
+      .json()
+      .warnings.find((w: any) => w.saleItemId === id);
+    assert.equal(warning.product, "code");
+    assert.equal(warning.version, "v1");
+    assert.match(warning.message, /互相依赖关系.*必选依赖.*关系ID/);
+  }
+  const graph: KnowledgeData = cyclic.json().release.data;
+  graph.saleItems.forEach((s) => {
+    s.module_code = "M";
+    s.specification_md = "原文";
+  });
+  assert.deepEqual(dependencyGroups(graph), [["s", "s2"]]);
+  graph.saleItems.push(
+    { ...graph.saleItems[0], sale_item_id: "s3" },
+    { ...graph.saleItems[0], sale_item_id: "outside" },
+  );
+  graph.dependencies = [
+    {
+      ...graph.dependencies[0],
+      sale_item_id: "s",
+      depends_on_sale_item_id: "s2",
+    },
+    {
+      ...graph.dependencies[0],
+      dependency_id: "d2",
+      sale_item_id: "s2",
+      depends_on_sale_item_id: "s3",
+      dependency_type: "optional",
+    },
+    {
+      ...graph.dependencies[0],
+      dependency_id: "d3",
+      sale_item_id: "s3",
+      depends_on_sale_item_id: "s",
+      dependency_type: "conditional",
+      condition_note: "按场景启用",
+    },
+    {
+      ...graph.dependencies[0],
+      dependency_id: "d4",
+      sale_item_id: "s3",
+      depends_on_sale_item_id: "outside",
+    },
+  ];
+  assert.deepEqual(dependencyGroups(graph), [["s", "s2", "s3"]]);
+  assert.equal(validateKnowledge(graph).length, 0);
+  assert.equal(
+    knowledgeWarnings(graph).length,
+    3,
+    "环路外依赖不能被误报为互相依赖成员",
+  );
+  graph.dependencies = [
+    { ...graph.dependencies[0], depends_on_sale_item_id: "s" },
+  ];
+  assert.match(validateKnowledge(graph).join("；"), /自循环/);
   await db.query("DELETE FROM public.kb_sale_dependencies");
   await db.query(
     "UPDATE public.kb_sale_items SET status='draft' WHERE sale_item_id='s2'",

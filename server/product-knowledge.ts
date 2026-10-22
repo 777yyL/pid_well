@@ -166,41 +166,81 @@ export function validateKnowledge(data: KnowledgeData): string[] {
     )
       add(`销售项 ${label} 分类不属于其版本`);
   }
-  const edges = new Map<string, string[]>();
   for (const d of data.dependencies) {
     if (!items.has(d.sale_item_id) || !items.has(d.depends_on_sale_item_id))
       add(`依赖 ${d.dependency_id} 的目标或源销售项未启用`);
     if (d.sale_item_id === d.depends_on_sale_item_id)
       add(`依赖 ${d.dependency_id} 存在自循环`);
-    edges.set(d.sale_item_id, [
-      ...(edges.get(d.sale_item_id) ?? []),
-      d.depends_on_sale_item_id,
-    ]);
   }
-  const done = new Set<string>(),
-    visiting = new Set<string>();
-  const visit = (id: string): boolean => {
-    if (visiting.has(id)) return true;
-    if (done.has(id)) return false;
-    visiting.add(id);
-    for (const next of edges.get(id) ?? []) if (visit(next)) return true;
-    visiting.delete(id);
-    done.add(id);
-    return false;
-  };
-  for (const id of items)
-    if (visit(id)) {
-      add("销售项依赖存在环路");
-      break;
-    }
   return issues.slice(0, 20);
 }
+// Strongly connected components identify mutual dependencies without enumerating every cycle.
+export function dependencyGroups(data: KnowledgeData): string[][] {
+  const edges = new Map(
+    data.saleItems.map((s) => [s.sale_item_id, [] as string[]]),
+  );
+  for (const d of data.dependencies)
+    if (edges.has(d.depends_on_sale_item_id))
+      edges.get(d.sale_item_id)?.push(d.depends_on_sale_item_id);
+  const indexes = new Map<string, number>(),
+    low = new Map<string, number>();
+  const stack: string[] = [],
+    onStack = new Set<string>(),
+    groups: string[][] = [];
+  let index = 0;
+  function visit(id: string) {
+    indexes.set(id, index);
+    low.set(id, index++);
+    stack.push(id);
+    onStack.add(id);
+    for (const next of edges.get(id) ?? []) {
+      if (!indexes.has(next)) {
+        visit(next);
+        low.set(id, Math.min(low.get(id)!, low.get(next)!));
+      } else if (onStack.has(next))
+        low.set(id, Math.min(low.get(id)!, indexes.get(next)!));
+    }
+    if (low.get(id) !== indexes.get(id)) return;
+    const group: string[] = [];
+    let member: string;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      group.push(member);
+    } while (member !== id);
+    if (group.length > 1) groups.push(group.sort());
+  }
+  for (const id of edges.keys()) if (!indexes.has(id)) visit(id);
+  return groups;
+}
 export function knowledgeWarnings(data: KnowledgeData) {
+  const items = new Map(data.saleItems.map((s) => [s.sale_item_id, s]));
+  const groups = new Map(
+    dependencyGroups(data).flatMap((ids) =>
+      ids.map((id) => [id, ids] as const),
+    ),
+  );
   return data.saleItems.flatMap((sale) => {
     const missing = [
       !sale.module_code?.trim() && "模块编码未提供",
       !sale.specification_md?.trim() && "技术规格待确认",
     ].filter(Boolean);
+    const group = groups.get(sale.sale_item_id);
+    if (group) {
+      const links = data.dependencies.filter(
+        (d) =>
+          d.sale_item_id === sale.sale_item_id &&
+          group.includes(d.depends_on_sale_item_id),
+      );
+      const types: Record<string, string> = {
+        required: "必选",
+        conditional: "条件",
+        optional: "可选",
+      };
+      missing.push(
+        `存在互相依赖关系：${links.map((d) => `${types[d.dependency_type]}依赖 ${items.get(d.depends_on_sale_item_id)?.name}（${d.depends_on_sale_item_id}），关系ID ${d.dependency_id}`).join("；")}。保留各销售项独立记录，组合采购与授权需核实，不自动合并或免除依赖。`,
+      );
+    }
     if (!missing.length) return [];
     const version = data.versions.find(
       (v) => v.product_version_id === sale.product_version_id,
