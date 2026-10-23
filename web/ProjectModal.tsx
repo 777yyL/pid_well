@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Modal, Form, Input, Select, Alert, Button, App as AntApp } from "antd";
-import { api, post } from "./api";
+import { Modal, Form, Input, Alert, Button, App as AntApp } from "antd";
+import { post } from "./api";
 export function ProjectModal({
   open,
   onClose,
@@ -12,20 +12,12 @@ export function ProjectModal({
 }) {
   const [form] = Form.useForm();
   const { message } = AntApp.useApp();
-  const [wiki, setWiki] = useState<{ id: string; name: string }[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!open) return;
     form.resetFields();
     setError("");
-    void api<{ projects: { id: string; name: string }[] }>("/wiki/projects")
-      .then((result) => {
-        setWiki(result.projects ?? []);
-        if (result.projects?.length === 1)
-          form.setFieldValue("wikiProjectId", result.projects[0].id);
-      })
-      .catch((e) => setError(e.message));
   }, [open, form]);
   async function create() {
     setBusy(true);
@@ -55,13 +47,13 @@ export function ProjectModal({
       }
     >
       <p className="muted">
-        文件、会话、证据和报告归属于同一个项目，支持持续跟进。
+        文件、会话、证据和报告归属于同一个项目。产品知识库由管理员统一设置，无需选择。
       </p>
       {error && (
         <Alert
           type="warning"
           message={error}
-          description="可以重试知识库连接，或填写明确的项目 UUID。"
+          description="如果提示默认知识库未配置，请联系管理员完成知识库设置。"
         />
       )}
       <Form form={form} layout="vertical" requiredMark={false}>
@@ -78,19 +70,6 @@ export function ProjectModal({
             maxLength={5000}
             placeholder="业务场景、已有系统、优先考虑的产品或版本"
           />
-        </Form.Item>
-        <Form.Item
-          label="产品知识库项目"
-          name="wikiProjectId"
-          rules={[{ required: true, message: "请选择或填写知识库项目 ID" }]}
-        >
-          {wiki.length ? (
-            <Select
-              options={wiki.map((p) => ({ value: p.id, label: p.name }))}
-            />
-          ) : (
-            <Input placeholder="LLM Wiki 项目 UUID" />
-          )}
         </Form.Item>
       </Form>
     </Modal>

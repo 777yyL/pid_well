@@ -5,13 +5,14 @@ import {
   Input,
   InputNumber,
   Switch,
+  Select,
   Button,
   Alert,
   Divider,
   App as AntApp,
 } from "antd";
 import { ApiOutlined, CheckCircleOutlined } from "@ant-design/icons";
-import type { SettingsView } from "../shared/domain";
+import type { SettingsView, WikiSettingsView } from "../shared/domain";
 import { api, post } from "./api";
 import { KnowledgePublishing } from "./KnowledgePublishing";
 export function Settings({
@@ -26,30 +27,58 @@ export function Settings({
   section?: "agent" | "wiki";
 }) {
   const [form] = Form.useForm();
+  const defaultWikiId = Form.useWatch("defaultWikiProjectId", form);
   const { message } = AntApp.useApp();
-  const [settings, setSettings] = useState<SettingsView | null>(null);
+  const [settings, setSettings] = useState<
+    SettingsView | WikiSettingsView | null
+  >(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [testing, setTesting] = useState("");
+  const [wikiProjects, setWikiProjects] = useState<
+    { id: string; name: string }[]
+  >([]);
+  const [wikiError, setWikiError] = useState("");
+  async function loadWikiProjects() {
+    try {
+      const result = await api<{ projects: { id: string; name: string }[] }>(
+        "/wiki/projects",
+      );
+      setWikiProjects(result.projects ?? []);
+      setWikiError("");
+    } catch (e) {
+      setWikiError((e as Error).message);
+    }
+  }
   useEffect(() => {
+    const controller = new AbortController();
     if (open) {
       setError("");
       setSettings(null);
-      void api<SettingsView>("/settings")
+      form.resetFields();
+      void api<SettingsView | WikiSettingsView>(
+        section === "wiki" ? "/settings/wiki" : "/settings",
+        { signal: controller.signal },
+      )
         .then((s) => {
+          if (controller.signal.aborted) return;
           setSettings(s);
           form.setFieldsValue({ ...s, modelApiKey: "", wikiToken: "" });
+          if (section === "wiki") void loadWikiProjects();
         })
-        .catch((e) => setError(e.message));
+        .catch((e) => {
+          if (!controller.signal.aborted) setError(e.message);
+        });
     }
-  }, [open, form]);
+    return () => controller.abort();
+  }, [open, section, form]);
   async function save() {
     setLoading(true);
     try {
       if (!settings) throw new Error("配置尚未加载完成，请稍后重试");
       const fields =
         section === "wiki"
-          ? ["wikiBaseUrl", "wikiToken"]
+          ? ["wikiBaseUrl", "wikiToken", "defaultWikiProjectId"]
           : [
               "modelBaseUrl",
               "model",
@@ -60,20 +89,22 @@ export function Settings({
             ];
       await form.validateFields(fields);
       const values = form.getFieldsValue(fields);
-      const payload = {
-        ...settings,
-        ...values,
-        modelApiKey: values.modelApiKey || undefined,
-        wikiToken: values.wikiToken || undefined,
-      };
-      const result = await api<SettingsView>("/settings", {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      });
+      const payload =
+        section === "wiki"
+          ? { ...values, wikiToken: values.wikiToken || undefined }
+          : { ...values, modelApiKey: values.modelApiKey || undefined };
+      const result = await api<SettingsView | WikiSettingsView>(
+        section === "wiki" ? "/settings/wiki" : "/settings",
+        {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        },
+      );
       setSettings(result);
       form.setFieldsValue({ modelApiKey: "", wikiToken: "" });
       message.success("连接配置已保存");
       onSaved();
+      if (section === "wiki") void loadWikiProjects();
     } catch (e) {
       if (e instanceof Error) setError(e.message);
     } finally {
@@ -124,7 +155,10 @@ export function Settings({
       }
     >
       <p className="muted">
-        配置仅管理员可修改。密钥在服务端加密保存，留空保留原值。
+        {section === "wiki"
+          ? "由管理员统一维护，全体用户的新项目自动使用默认知识库。"
+          : "仅用于你发起的任务，不与其他账号共享。"}{" "}
+        密钥加密保存，留空保留原值。
       </p>
       {error && (
         <Alert
@@ -157,12 +191,20 @@ export function Settings({
               <Input placeholder="服务商提供的模型 ID" />
             </Form.Item>
             <Form.Item
-              label={settings?.modelApiKeySet ? "API Key · 已配置" : "API Key"}
+              label={
+                settings &&
+                "modelApiKeySet" in settings &&
+                settings.modelApiKeySet
+                  ? "API Key · 已配置"
+                  : "API Key"
+              }
               name="modelApiKey"
             >
               <Input.Password
                 placeholder={
-                  settings?.modelApiKeySet
+                  settings &&
+                  "modelApiKeySet" in settings &&
+                  settings.modelApiKeySet
                     ? "留空保留已保存密钥"
                     : "本地无鉴权模型可留空"
                 }
@@ -200,7 +242,9 @@ export function Settings({
           </Form.Item>
           <Form.Item
             label={
-              settings?.wikiTokenSet ? "访问 Token · 已配置" : "访问 Token"
+              settings && "wikiTokenSet" in settings && settings.wikiTokenSet
+                ? "访问 Token · 已配置"
+                : "访问 Token"
             }
             name="wikiToken"
           >
@@ -209,6 +253,50 @@ export function Settings({
               autoComplete="off"
             />
           </Form.Item>
+          <Form.Item
+            label="默认产品知识库"
+            name="defaultWikiProjectId"
+            rules={[
+              { required: true, message: "请选择默认知识库或填写明确 ID" },
+            ]}
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择所有新项目使用的知识库"
+              options={wikiProjects.map((p) => ({
+                value: p.id,
+                label: `${p.name} · ${p.id}`,
+              }))}
+            />
+          </Form.Item>
+          {wikiError && (
+            <Alert
+              type="warning"
+              message="知识库列表暂不可用"
+              description={wikiError}
+            />
+          )}
+          <details style={{ marginBottom: 16 }}>
+            <summary>手动填写默认知识库 ID</summary>
+            <Input
+              aria-label="默认知识库 ID"
+              value={defaultWikiId ?? ""}
+              onChange={(e) =>
+                form.setFieldValue(
+                  "defaultWikiProjectId",
+                  e.target.value.trim(),
+                )
+              }
+              placeholder="明确的知识空间 ID，不能使用 current"
+            />
+          </details>
+          <Button
+            onClick={() => void loadWikiProjects()}
+            style={{ marginRight: 8 }}
+          >
+            刷新知识库列表
+          </Button>
           <Button
             onClick={() => void test("wiki")}
             loading={testing === "wiki"}
@@ -235,7 +323,13 @@ export function Settings({
       {open && section === "wiki" && (
         <>
           <Divider orientation="left">结构化知识版本</Divider>
-          <KnowledgePublishing />
+          <KnowledgePublishing
+            defaultProjectId={
+              settings && "defaultWikiProjectId" in settings
+                ? settings.defaultWikiProjectId
+                : ""
+            }
+          />
         </>
       )}
     </Modal>

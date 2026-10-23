@@ -61,6 +61,9 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       headers: { ...headers, cookie: otherCookie },
       payload: payload as never,
     });
+  await request("PUT", "/api/settings/wiki", {
+    defaultWikiProjectId: "test-wiki",
+  });
   const project = await request("POST", "/api/projects", {
     name: "隔离测试项目",
     wikiProjectId: "test-wiki",
@@ -502,7 +505,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       404,
     );
     assert.equal(
-      (await request("PUT", "/api/settings", {}, memberCookie)).statusCode,
+      (await request("PUT", "/api/settings/wiki", {}, memberCookie)).statusCode,
       403,
     );
     const users = await request("GET", "/api/users");
@@ -1159,14 +1162,13 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     modelBaseUrl: `http://127.0.0.1:${port}/v1`,
     model: "test-model",
     modelApiKey: "test-secret-key",
-    wikiBaseUrl: "http://127.0.0.1:19828",
     contextWindow: 64000,
     maxOutputTokens: 4096,
     requireRequirementConfirmation: true,
   });
   assert.equal(saved.statusCode, 200, saved.body);
   const [stored] = await db.query<{ value: { modelApiKey: string } }>(
-    "SELECT value FROM settings WHERE id=1",
+    "SELECT value FROM user_agent_settings LIMIT 1",
   );
   assert(!stored.value.modelApiKey.includes("test-secret-key"));
   assert(!saved.body.includes("test-secret-key"));

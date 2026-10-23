@@ -68,6 +68,12 @@ test("公开注册与项目生命周期：权限、归档保护、完整删除�
       ).statusCode,
       409,
     );
+    await call(
+      "PUT",
+      "/api/settings/wiki",
+      { defaultWikiProjectId: "wiki-test" },
+      admin,
+    );
     const id = (
       await call(
         "POST",

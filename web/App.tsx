@@ -250,19 +250,19 @@ function WorkspaceShell({
         )}
         <div className="sidebar-bottom">
           <nav className="sidebar-utilities" aria-label="配置与团队">
+            <button
+              aria-label="Agent 配置"
+              title="Agent 配置"
+              onClick={() => {
+                setConfigSection("agent");
+                setSettingsOpen(true);
+              }}
+            >
+              <SettingOutlined />
+              <span>Agent 配置</span>
+            </button>
             {user.role === "admin" && (
               <>
-                <button
-                  aria-label="Agent 配置"
-                  title="Agent 配置"
-                  onClick={() => {
-                    setConfigSection("agent");
-                    setSettingsOpen(true);
-                  }}
-                >
-                  <SettingOutlined />
-                  <span>Agent 配置</span>
-                </button>
                 <button
                   aria-label="知识库配置"
                   title="知识库配置"
@@ -412,18 +412,21 @@ function WorkspaceShell({
               <div className="setup-banner">
                 <SettingOutlined />
                 <span>
-                  先连接支持工具调用的模型，再开始 Agent 会话。产品知识库可通过
-                  LLM Wiki API 接入。
+                  先在个人 Agent
+                  配置中设置支持工具调用的模型，再开始会话。知识库由管理员统一维护。
                 </span>
-                {user.role === "admin" && (
+                {
                   <Button
                     size="small"
                     type="primary"
-                    onClick={() => setSettingsOpen(true)}
+                    onClick={() => {
+                      setConfigSection("agent");
+                      setSettingsOpen(true);
+                    }}
                   >
                     配置连接
                   </Button>
-                )}
+                }
               </div>
             )}
             {state.loadError && (

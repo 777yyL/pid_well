@@ -19,7 +19,14 @@ import {
 import { config } from "./config.js";
 import { productScope, selectProducts } from "./product-scope.js";
 import { AppError } from "./errors.js";
-import { settingsView, saveSettings, loadSettings } from "./settings.js";
+import {
+  settingsView,
+  saveAgentSettings,
+  wikiSettingsView,
+  saveWikiSettings,
+  defaultWikiProject,
+  loadSettings,
+} from "./settings.js";
 import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { parseDocument, supportedExtensions } from "./documents.js";
 import {
@@ -178,22 +185,35 @@ export function routes(
     },
   );
   app.get("/api/settings", async (request) => {
-    requireUser(request);
-    return settingsView(db);
+    const user = requireUser(request);
+    return settingsView(db, user.id);
   });
   app.put("/api/settings", async (request) => {
+    const user = requireUser(request);
+    await saveAgentSettings(db, user.id, request.body);
+    await audit(db, null, user.id, null, "agent_settings_changed", {});
+    return settingsView(db, user.id);
+  });
+  app.get("/api/settings/wiki", async (request) => {
+    requireAdmin(request);
+    return wikiSettingsView(db);
+  });
+  app.put("/api/settings/wiki", async (request) => {
     const user = requireAdmin(request);
-    await saveSettings(db, request.body);
-    await audit(db, null, user.id, null, "settings_changed", {});
-    return settingsView(db);
+    await saveWikiSettings(db, request.body);
+    await audit(db, null, user.id, null, "wiki_settings_changed", {});
+    return wikiSettingsView(db);
   });
   app.post("/api/settings/test", async (request) => {
-    requireAdmin(request);
+    const user = requireUser(request);
     const { target } = z
       .object({ target: z.enum(["wiki", "model"]) })
       .parse(request.body);
-    if (target === "wiki") return new WikiClient(db).projects();
-    const settings = await loadSettings(db);
+    if (target === "wiki") {
+      requireAdmin(request);
+      return new WikiClient(db).projects();
+    }
+    const settings = await loadSettings(db, user.id);
     if (!settings.model) throw new AppError(422, "先保存模型配置");
     const { models, model } = compatibleModel(settings);
     try {
@@ -217,8 +237,15 @@ export function routes(
     }
   });
   app.get("/api/wiki/projects", async (request) => {
-    requireUser(request);
-    return new WikiClient(db).projects();
+    const user = requireUser(request);
+    const selected =
+      user.role === "admin" ? null : await defaultWikiProject(db);
+    const data = await new WikiClient(db).projects();
+    if (!selected) return data;
+    const projects = Array.isArray(data.projects) ? data.projects : [];
+    return {
+      projects: projects.filter((p: { id?: string }) => p.id === selected),
+    };
   });
   app.get("/api/users", async (request) => {
     requireUser(request);
@@ -257,17 +284,18 @@ export function routes(
       .object({
         name: z.string().min(1).max(120),
         description: z.string().max(5000).default(""),
-        wikiProjectId: z.string().min(1).max(512),
       })
       .parse(request.body);
-    if (input.wikiProjectId === "current")
-      throw new AppError(422, "请选择明确的知识库项目 ID，不能绑定 current");
+    const wikiProjectId = await defaultWikiProject(db);
     const id = randomUUID();
     await db.query(
       "INSERT INTO projects(id,name,description,wiki_project_id,owner_id) VALUES($1,$2,$3,$4,$5)",
-      [id, input.name, input.description, input.wikiProjectId, user.id],
+      [id, input.name, input.description, wikiProjectId, user.id],
     );
-    await audit(db, id, user.id, null, "project_created", input);
+    await audit(db, id, user.id, null, "project_created", {
+      ...input,
+      wikiProjectId,
+    });
     await db.query(
       "INSERT INTO product_scopes(project_id) VALUES($1) ON CONFLICT DO NOTHING",
       [id],
@@ -441,9 +469,9 @@ export function routes(
       [user.id, input.idempotencyKey],
     );
     if (existing) return existing;
-    const settings = await loadSettings(db);
+    const settings = await loadSettings(db, user.id);
     if (!settings.model)
-      throw new AppError(422, "请管理员先在连接设置中配置模型");
+      throw new AppError(422, "请先在个人 Agent 配置中设置模型");
     const runId = randomUUID();
     await db.transaction(async (tx) => {
       await tx.query("SELECT id FROM projects WHERE id=$1 FOR UPDATE", [

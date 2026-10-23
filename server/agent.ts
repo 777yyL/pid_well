@@ -230,7 +230,7 @@ export class AgentRunner {
     }
   }
   private async execute(run: Run & { user_id: string }) {
-    const settings = await loadSettings(this.db);
+    const settings = await loadSettings(this.db, run.user_id);
     if (!settings.model) {
       await this.db.query(
         "UPDATE runs SET status='failed',error='尚未配置模型',updated_at=now() WHERE id=$1",

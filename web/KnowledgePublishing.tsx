@@ -19,11 +19,18 @@ type ReleaseList = {
   }[];
   draftCounts: { products: number; versions: number; saleItems: number };
 };
-export function KnowledgePublishing() {
+export function KnowledgePublishing({
+  defaultProjectId = "",
+}: {
+  defaultProjectId?: string;
+}) {
   const { message } = App.useApp();
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [projectId, setProjectId] = useState("");
   const [name, setName] = useState("");
+  useEffect(() => {
+    setProjectId(defaultProjectId);
+  }, [defaultProjectId]);
   const [data, setData] = useState<ReleaseList | null>(null);
   const [error, setError] = useState("");
   const [projectError, setProjectError] = useState("");

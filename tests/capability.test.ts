@@ -5,7 +5,7 @@ import Fastify from "fastify";
 import { openDatabase, migrate } from "../server/db.js";
 import { createApp } from "../server/index.js";
 import { issueSession } from "../server/auth.js";
-import { saveSettings } from "../server/settings.js";
+import { saveSettings, saveAgentSettings } from "../server/settings.js";
 import { searchPaths } from "../server/capability.js";
 
 test("能力检索兼容旧目录销售项，但不把普通产品页当销售项", () => {
@@ -203,6 +203,9 @@ test("能力检索全链路：异步候选、证据核验、追问、项目候�
     "INSERT INTO projects(id,name,wiki_project_id,owner_id) VALUES($1,'待核实项目','wiki',$2)",
     [projectId, userId],
   );
+  await saveAgentSettings(db, userId, {
+    modelBaseUrl: `http://127.0.0.1:${port}/v1`, model: "test-model", modelApiKey: "isolated-test-secret",
+  });
   const { app } = await createApp(db);
   await app.ready();
   const token = await issueSession(db, userId),

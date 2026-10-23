@@ -164,6 +164,21 @@ if (process.env.QA_KNOWLEDGE === "true") {
     [projectId, JSON.stringify({ combinations })],
   );
 }
+const { saveWikiSettings: savePreviewWiki } =
+  await import("../server/settings.js");
+await savePreviewWiki(db, {
+  defaultWikiProjectId:
+    process.env.QA_KNOWLEDGE === "true"
+      ? "ec087b7b-beb8-4e7d-920c-b6d169e58a9d"
+      : "qa-only",
+});
+if (process.env.QA_ACCOUNTS === "true") {
+  const memberId = randomUUID();
+  await db.query("INSERT INTO users(id,username,display_name,password_hash,role) SELECT $1,'qa_member','成员验收账号',password_hash,'member' FROM users WHERE id=$2", [memberId, userId]);
+  await db.query("INSERT INTO project_members(project_id,user_id) VALUES($1,$2)", [projectId, memberId]);
+  const { saveAgentSettings } = await import("../server/settings.js");
+  await saveAgentSettings(db, userId, { model: "admin-preview", modelApiKey: "qa-admin-only" });
+}
 const { app } = await createApp(db, true);
 if (process.env.QA_REPORTS === "true") {
   await db.query(
@@ -668,6 +683,7 @@ if (process.env.QA_CAPABILITY === "true") {
   await fixture.listen({ host: "127.0.0.1", port: 0 });
   const fixturePort = (fixture.server.address() as { port: number }).port;
   await saveSettings(db, {
+    defaultWikiProjectId: "qa-capability",
     wikiBaseUrl: `http://127.0.0.1:${fixturePort}`,
     modelBaseUrl: `http://127.0.0.1:${fixturePort}/v1`,
     model: "isolated-capability",
@@ -677,6 +693,12 @@ if (process.env.QA_CAPABILITY === "true") {
     "UPDATE projects SET wiki_project_id='qa-capability',name='能力检索验收（隔离数据）' WHERE id=$1",
     [projectId],
   );
+  const { saveAgentSettings } = await import("../server/settings.js");
+  await saveAgentSettings(db, userId, {
+    modelBaseUrl: `http://127.0.0.1:${fixturePort}/v1`,
+    model: "isolated-capability",
+    modelApiKey: "qa-only",
+  });
   app.addHook("onClose", () => fixture.close());
 }
 await app.listen({

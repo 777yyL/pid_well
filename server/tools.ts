@@ -306,7 +306,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           });
         }
         const result = await saveRequirements(db, projectId, items, runId);
-        const settings = await loadSettings(db);
+        const settings = await loadSettings(db, ctx.userId);
         if (!settings.requireRequirementConfirmation) {
           await db.query(
             "UPDATE requirements SET confirmed=true WHERE project_id=$1 AND id=ANY($2::text[])",

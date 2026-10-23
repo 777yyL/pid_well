@@ -85,6 +85,7 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, username text UNIQUE NOT NULL, display_name text NOT NULL, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('admin','member')), active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS sessions (hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id), expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS settings (id integer PRIMARY KEY CHECK(id=1), value jsonb NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS user_agent_settings (user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS bootstrap (id integer PRIMARY KEY CHECK(id=1))`,
   `CREATE TABLE IF NOT EXISTS projects (id uuid PRIMARY KEY, name text NOT NULL, description text NOT NULL DEFAULT '', wiki_project_id text NOT NULL, owner_id uuid NOT NULL REFERENCES users(id), created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS project_members (project_id uuid REFERENCES projects(id) ON DELETE CASCADE, user_id uuid REFERENCES users(id), PRIMARY KEY(project_id,user_id))`,
@@ -113,6 +114,22 @@ const migrations = [
 export async function migrate(db: Database) {
   await db.transaction(async (tx) => {
     for (const sql of migrations) await tx.query(sql);
+    await tx.query(`INSERT INTO user_agent_settings(user_id,value)
+      SELECT u.id,jsonb_strip_nulls(jsonb_build_object('modelBaseUrl',s.value->'modelBaseUrl','model',s.value->'model',
+        'modelApiKey',s.value->'modelApiKey','contextWindow',s.value->'contextWindow',
+        'maxOutputTokens',s.value->'maxOutputTokens','requireRequirementConfirmation',s.value->'requireRequirementConfirmation'))
+      FROM settings s CROSS JOIN LATERAL (SELECT id FROM users WHERE role='admin' ORDER BY created_at,id LIMIT 1) u
+      WHERE s.id=1 AND coalesce(s.value->>'model','')<>'' AND NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)
+      ON CONFLICT(user_id) DO NOTHING`);
+    await tx.query(`UPDATE settings SET value=value - ARRAY['modelBaseUrl','model','modelApiKey','contextWindow','maxOutputTokens','requireRequirementConfirmation']
+      WHERE id=1 AND NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)
+      AND EXISTS(SELECT 1 FROM user_agent_settings a JOIN users u ON u.id=a.user_id WHERE u.role='admin')`);
+    await tx.query(`UPDATE settings SET value=value || jsonb_build_object('defaultWikiProjectId',(SELECT min(wiki_project_id) FROM projects))
+      WHERE id=1 AND NOT (value ? 'defaultWikiProjectId') AND (SELECT count(DISTINCT wiki_project_id) FROM projects)=1
+      AND NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)`);
+    await tx.query(
+      "INSERT INTO schema_migrations(version) VALUES(6) ON CONFLICT DO NOTHING",
+    );
     await tx.query(
       "INSERT INTO schema_migrations(version) VALUES(1) ON CONFLICT DO NOTHING",
     );

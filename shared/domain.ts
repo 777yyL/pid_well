@@ -321,9 +321,13 @@ export interface SettingsView {
   modelBaseUrl: string;
   model: string;
   modelApiKeySet: boolean;
-  wikiBaseUrl: string;
-  wikiTokenSet: boolean;
   contextWindow: number;
   maxOutputTokens: number;
   requireRequirementConfirmation: boolean;
+}
+
+export interface WikiSettingsView {
+  wikiBaseUrl: string;
+  wikiTokenSet: boolean;
+  defaultWikiProjectId: string;
 }

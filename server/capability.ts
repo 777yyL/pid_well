@@ -183,7 +183,7 @@ export class CapabilityService {
     if (!updated.length)
       throw new AppError(409, "该会话正在检索，请等待完成或停止");
     const controller = new AbortController();
-    const promise = this.run({ ...session, data }, turn, controller.signal)
+    const promise = this.run({ ...session, data }, turn, controller.signal, user.id)
       .catch(() => {})
       .finally(() => this.jobs.delete(id));
     this.jobs.set(id, { controller, promise });
@@ -254,6 +254,7 @@ export class CapabilityService {
     session: CapabilitySession,
     turn: CapabilityTurn,
     signal: AbortSignal,
+    userId: string,
   ) {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const wiki = new WikiClient(this.db, deadline);
@@ -268,7 +269,7 @@ export class CapabilityService {
       if (!turn.warnings.includes(message)) turn.warnings.push(message);
     };
     try {
-      const settings = await loadSettings(this.db);
+      const settings = await loadSettings(this.db, userId);
       const history = session.data.turns.slice(-4, -1).map((t) => ({
         question: t.question,
         requirements: t.requirements,
