@@ -15,6 +15,7 @@ import { api } from "./api";
 import { KnowledgeMarkdown } from "./KnowledgeReader";
 import { AppstoreOutlined } from "@ant-design/icons";
 import { ProductCatalog } from "./ProductCatalog";
+import type { EvaluationMode } from "./workflow-guide";
 const key = (p: { name: string; version: string }) =>
   JSON.stringify([p.name, p.version]);
 function ProductBasics({
@@ -64,7 +65,7 @@ export function ProductSelection({
   locked: boolean;
   active: boolean;
   onRefresh: () => Promise<void>;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, mode?: EvaluationMode) => Promise<void>;
 }) {
   const [form] = Form.useForm();
   const autoPlanRequests = useRef(new Set<string>());
@@ -671,17 +672,7 @@ export function ProductSelection({
             确认产品范围
           </Button>
           {scope.status === "confirmed" && (
-            <Button
-              data-guide="continue"
-              disabled={active || busy}
-              onClick={() =>
-                void onSend(
-                  "产品选型已在界面确认，请先读取项目状态，再按我选定的产品范围、版本和售前策略继续销售项匹配。",
-                ).catch(() => {})
-              }
-            >
-              按已选产品继续评估
-            </Button>
+            <span className="muted">范围已确认，请在对话框下方开始评估。</span>
           )}
         </Space>
       </Form>

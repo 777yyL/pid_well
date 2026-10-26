@@ -8,6 +8,7 @@ import type {
 } from "../shared/domain";
 import { api, post } from "./api";
 import { createRequestId } from "./request-id";
+import type { EvaluationMode } from "./workflow-guide";
 export type WorkspaceData = Workspace & {
   artifacts: { id: string; name: string; format: string; created_at: string }[];
   findings: {
@@ -32,6 +33,7 @@ export function useWorkspace() {
   const pendingSubmission = useRef<{
     conversationId: string;
     text: string;
+    mode: EvaluationMode;
     key: string;
   } | null>(null);
   selected.current = { projectId, conversationId };
@@ -168,7 +170,7 @@ export function useWorkspace() {
     );
     return () => clearInterval(timer);
   }, [projectId, refresh]);
-  async function send(text: string) {
+  async function send(text: string, mode: EvaluationMode = "agent") {
     if (!projectId || !text.trim()) return;
     setSending(true);
     try {
@@ -182,15 +184,18 @@ export function useWorkspace() {
       }
       if (
         pendingSubmission.current?.conversationId !== id ||
-        pendingSubmission.current.text !== text
+        pendingSubmission.current.text !== text ||
+        pendingSubmission.current.mode !== mode
       )
         pendingSubmission.current = {
           conversationId: id,
           text,
+          mode,
           key: createRequestId(),
         };
       await post(`/conversations/${id}/runs`, {
         message: text,
+        mode,
         idempotencyKey: pendingSubmission.current.key,
       });
       pendingSubmission.current = null;

@@ -455,6 +455,7 @@ export function routes(
     const input = z
       .object({
         message: z.string().trim().min(1).max(20000),
+        mode: z.enum(["quick", "agent"]).default("agent"),
         idempotencyKey: z.string().uuid(),
       })
       .parse(request.body);
@@ -478,7 +479,7 @@ export function routes(
         conversation.project_id,
       ]);
       await tx.query(
-        "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status) VALUES($1,$2,$3,$4,$5,$6,$7)",
+        "INSERT INTO runs(id,conversation_id,project_id,user_id,input,idempotency_key,status,evaluation_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)",
         [
           runId,
           id,
@@ -487,6 +488,7 @@ export function routes(
           input.message,
           input.idempotencyKey,
           "queued",
+          input.mode,
         ],
       );
       await tx.query(
@@ -691,13 +693,14 @@ export function routes(
   app.post("/api/projects/:id/reports", async (request) => {
     const id = param(request, "id");
     await accessProject(db, requireUser(request), id);
-    const { format, kind } = z
+    const { format, kind, stage } = z
       .object({
         format: z.enum(["xlsx", "csv", "html"]),
         kind: z.enum(["full", "sales"]).default("full"),
+        stage: z.enum(["formal", "preliminary"]).default("formal"),
       })
       .parse(request.body);
-    return createReport(db, id, format, kind);
+    return createReport(db, id, format, kind, undefined, stage);
   });
   app.get("/api/artifacts/:id", async (request, reply) => {
     const id = param(request, "id");

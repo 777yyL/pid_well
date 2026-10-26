@@ -5,6 +5,7 @@ import zhCN from "antd/locale/zh_CN";
 import { App } from "./App";
 import "./styles.css";
 import "./theme.css";
+import "./chat.css";
 document.documentElement.removeAttribute("data-theme");
 localStorage.removeItem("workspace.theme");
 createRoot(document.getElementById("root")!).render(

@@ -44,7 +44,16 @@ test("Wiki 诊断脚本运行真实工具并输出报告，凭据不进入报告
         res.end("{}");
       }
     } else if (url.pathname.endsWith("/search") && req.method === "POST") {
-      res.end(JSON.stringify({ results: [{ path: sale }] }));
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        assert.deepEqual(JSON.parse(body).allowedPaths, [sale]);
+        res.end(
+          JSON.stringify({ scopeApplied: true, results: [{ path: sale }] }),
+        );
+      });
     } else {
       res.statusCode = 404;
       res.end("{}");

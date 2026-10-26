@@ -71,14 +71,57 @@ export class WikiClient {
       throw new AppError(422, "知识库文件清单被截断，无法安全解析裸名链接");
     return wikiFilePaths(result);
   }
-  search(projectId: string, query: string, topK = 5, includeContent = true) {
-    return this.request(
+  async search(
+    projectId: string,
+    query: string,
+    topK = 5,
+    includeContent = true,
+    allowedPaths?: string[],
+  ) {
+    const allowed = allowedPaths?.map((path) => {
+      const paths = wikiFilePaths(path);
+      if (paths.length !== 1) throw new AppError(422, "无效范围路径");
+      return paths[0];
+    });
+    const response = await this.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/search`,
-      { query, topK, includeContent },
+      {
+        query,
+        topK,
+        includeContent,
+        ...(allowed === undefined ? {} : { allowedPaths: allowed }),
+      },
     );
+    if (allowed !== undefined) {
+      if (response.scopeApplied !== true)
+        throw new AppError(
+          502,
+          "LLM Wiki 未确认 scopeApplied，请升级范围检索服务",
+        );
+      if (!Array.isArray(response.results))
+        throw new AppError(502, "知识库搜索响应缺少 results 字段");
+      for (const value of response.results) {
+        const hit = value as Record<string, unknown> | null;
+        const paths = wikiFilePaths(
+          hit?.path ?? hit?.filePath ?? hit?.file_path,
+        );
+        if (paths.length !== 1)
+          throw new AppError(502, "知识库搜索结果缺少可识别路径");
+        if (!allowed.includes(paths[0]))
+          throw new AppError(502, "知识库返回范围外搜索结果");
+      }
+    }
+    return response;
   }
-  graph(projectId: string, query: string, options: { limit?: number; nodeType?: string } = {}) {
-    const params = new URLSearchParams({ q: query, limit: String(options.limit ?? 30) });
+  graph(
+    projectId: string,
+    query: string,
+    options: { limit?: number; nodeType?: string } = {},
+  ) {
+    const params = new URLSearchParams({
+      q: query,
+      limit: String(options.limit ?? 30),
+    });
     if (options.nodeType) params.set("nodeType", options.nodeType);
     return this.request(
       `/api/v1/projects/${encodeURIComponent(projectId)}/graph?${params}`,

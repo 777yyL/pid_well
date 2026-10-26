@@ -42,6 +42,7 @@ export interface ToolContext {
   conversationId: string;
   runId: string;
   userId: string;
+  evaluationMode?: "quick" | "agent";
   emit: (type: string, payload: Record<string, unknown>) => Promise<void>;
 }
 export function createTools(ctx: ToolContext): AgentTool[] {
@@ -298,8 +299,25 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             [item.documentId, projectId],
           );
           if (!doc) throw new AppError(422, "要求必须来自本项目已解析的文档");
+          const raw =
+            item.raw ??
+            doc.lines.slice(item.lineStart - 1, item.lineEnd).join("\n");
           items.push({
             ...item,
+            ...(ctx.evaluationMode === "quick"
+              ? {
+                  extractionMode: "quick" as const,
+                  subrequirements: [
+                    {
+                      id: item.id + ".1",
+                      raw,
+                      required: true,
+                      lineStart: item.lineStart,
+                      lineEnd: item.lineEnd,
+                    },
+                  ],
+                }
+              : {}),
             raw:
               item.raw ??
               doc.lines.slice(item.lineStart - 1, item.lineEnd).join("\n"),
@@ -307,7 +325,10 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         }
         const result = await saveRequirements(db, projectId, items, runId);
         const settings = await loadSettings(db, ctx.userId);
-        if (!settings.requireRequirementConfirmation) {
+        if (
+          ctx.evaluationMode === "quick" ||
+          !settings.requireRequirementConfirmation
+        ) {
           await db.query(
             "UPDATE requirements SET confirmed=true WHERE project_id=$1 AND id=ANY($2::text[])",
             [projectId, args.requirements.map((i) => i.id)],
@@ -622,6 +643,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       z.object({
         format: z.enum(["xlsx", "csv", "html"]),
         kind: z.enum(["full", "sales"]).default("full"),
+        stage: z.enum(["formal", "preliminary"]).default("formal"),
       }),
       async (args) => {
         const artifact = await createReport(
@@ -629,6 +651,8 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           projectId,
           args.format,
           args.kind,
+          undefined,
+          args.stage,
         );
         await ctx.emit("artifact_created", artifact);
         return artifact;

@@ -32,7 +32,12 @@ export const escapeHtml = (value: unknown) =>
         char
       ]!,
   );
-export async function captureReport(db: Database, projectId: string) {
+export type ReportStage = "formal" | "preliminary";
+export async function captureReport(
+  db: Database,
+  projectId: string,
+  stage: ReportStage = "formal",
+) {
   return db.transaction(async (tx) => {
     await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
     const [project] = await tx.query<{
@@ -47,12 +52,23 @@ export async function captureReport(db: Database, projectId: string) {
     );
     const rows = await assessmentRows(tx, projectId);
     if (
-      !requirements.length ||
-      rows.length !== requirements.length ||
-      requirements.some((r) => !r.confirmed) ||
-      rows.some((r) => !r.reviewed)
+      stage === "formal" &&
+      (!requirements.length ||
+        rows.length !== requirements.length ||
+        requirements.some((r) => !r.confirmed) ||
+        rows.some((r) => !r.reviewed))
     )
       throw new AppError(409, "正式报告需要全部条款已确认、已匹配且已复核");
+    if (!rows.length)
+      throw new AppError(409, "初评报告需要至少一条已保存的评估结果");
+    const assessed = new Set(rows.map((r) => r.requirementId));
+    const coverage = {
+      total: requirements.length,
+      assessed: rows.length,
+      reviewed: rows.filter((r) => r.reviewed).length,
+      unconfirmed: requirements.filter((r) => !r.confirmed).map((r) => r.id),
+      missing: requirements.filter((r) => !assessed.has(r.id)).map((r) => r.id),
+    };
     const pages = await tx.query<{
       id: string;
       path: string;
@@ -64,6 +80,8 @@ export async function captureReport(db: Database, projectId: string) {
       [projectId],
     );
     return {
+      stage,
+      coverage,
       project,
       rows,
       pages,
@@ -81,12 +99,16 @@ export async function createReport(
   format: "xlsx" | "csv" | "html",
   kind: "full" | "sales" = "full",
   frozen?: ReportSnapshot,
+  stage: ReportStage = "formal",
 ) {
   if (kind === "sales" && format !== "xlsx")
     throw new AppError(400, "销售项清单使用 XLSX 模板格式");
-  const snapshot = frozen ?? (await captureReport(db, projectId));
+  const snapshot = frozen ?? (await captureReport(db, projectId, stage));
   if (snapshot.project.id !== projectId)
     throw new AppError(400, "报告项目不一致");
+  if ((snapshot.stage ?? "formal") !== stage)
+    throw new AppError(409, "报告阶段不一致，请重新生成");
+  const preliminary = stage === "preliminary";
   const { project, rows, pages, docs } = snapshot;
   const procurement = summarizeSales(rows, pages);
   const sales = procurement.sales;
@@ -102,6 +124,7 @@ export async function createReport(
       .filter(([, value]) => !value)
       .map(([name]) => name);
     const remarks = [
+      preliminary && "初评／待复核：仅覆盖已保存结果，不作为最终采购或报价依据",
       procurement.issues.length &&
         "当前为待核实参考清单；采购核定事项见独立工作表",
       entity.description,
@@ -186,9 +209,12 @@ export async function createReport(
     ]),
   );
   const id = randomUUID();
-  const name = `${project.name}-${kind === "sales" ? "销售项清单" : "评估报告"}${procurement.issues.length ? "（采购待核实）" : ""}.${format}`;
+  const name = `${project.name}-${preliminary ? "初评·待复核-" : ""}${kind === "sales" ? "销售项清单" : "评估报告"}${procurement.issues.length ? "（采购待核实）" : ""}.${format}`;
   const storageName = `${id}.${format}`;
   const manifest = {
+    stage,
+    statusLabel: preliminary ? "初评／待复核" : "正式报告",
+    assessmentCoverage: snapshot.coverage,
     projectId,
     wikiProjectId: project.wiki_project_id,
     knowledgeReleaseIds: [
@@ -215,6 +241,7 @@ export async function createReport(
       id: r.requirementId,
       revision: r.revision,
       source: r.source,
+      reviewed: r.reviewed,
     })),
     documents: docs,
     evidence: pages
@@ -230,6 +257,22 @@ export async function createReport(
     const book = new ExcelJS.Workbook();
     book.creator = "评标AI";
     book.created = new Date();
+    if (preliminary) {
+      const status = book.addWorksheet("初评待复核");
+      status.addRows([
+        ["报告状态", "初评／待复核"],
+        [
+          "使用说明",
+          "仅包含已保存结果；未经完整复核，不作为最终采购或报价依据",
+        ],
+        ["条款总数", snapshot.coverage.total],
+        ["已评估", snapshot.coverage.assessed],
+        ["已复核", snapshot.coverage.reviewed],
+        ["未匹配条款", snapshot.coverage.missing.join("、") || "无"],
+        ["未确认条款", snapshot.coverage.unconfirmed.join("、") || "无"],
+      ]);
+      styleTable(status, [22, 110]);
+    }
     if (kind === "full") addOverview(book, snapshot, sales.length);
     const sheet = book.addWorksheet("功能点匹配报告", {
       views: [{ state: "frozen", ySplit: 1 }],
@@ -265,9 +308,11 @@ export async function createReport(
     purchasing.addRow(["类型", "核定事项"]);
     purchasing.addRow([
       "清单状态",
-      procurement.issues.length
-        ? "待核实参考清单，不作为最终采购或报价依据"
-        : "已通过实体与依赖核对，数量与授权范围仍需销售核定",
+      preliminary
+        ? "初评／待复核，不作为最终采购或报价依据"
+        : procurement.issues.length
+          ? "待核实参考清单，不作为最终采购或报价依据"
+          : "已通过实体与依赖核对，数量与授权范围仍需销售核定",
     ]);
     procurement.issues.forEach((issue) => purchasing.addRow(["待确认", issue]));
     procurement.reused.forEach((r) =>
@@ -323,7 +368,24 @@ export async function createReport(
   } else if (format === "csv") {
     buffer = Buffer.from(
       "\ufeff" +
-        [headers, ...details]
+        [
+          ...(preliminary
+            ? [
+                ["报告状态", "初评／待复核，不作为最终采购或报价依据"],
+                [
+                  "条款覆盖",
+                  `总计 ${snapshot.coverage.total}；已评估 ${snapshot.coverage.assessed}；已复核 ${snapshot.coverage.reviewed}`,
+                ],
+                ["未匹配条款", snapshot.coverage.missing.join("、") || "无"],
+                [
+                  "未确认条款",
+                  snapshot.coverage.unconfirmed.join("、") || "无",
+                ],
+              ]
+            : []),
+          headers,
+          ...details,
+        ]
           .map((row) =>
             row.map((v) => `"${safeCell(v).replaceAll('"', '""')}"`).join(","),
           )

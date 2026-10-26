@@ -16,7 +16,6 @@ const guides: Record<GuidePhase, Step[]> = {
       description:
         "点击这里选择文件。支持 DOCX、XLSX、PDF、Markdown 和 TXT，可一次上传多个子系统文件。扫描 PDF 请先完成 OCR。上传后等待解析完成，文件名用于区分子系统。",
       target: "upload",
-      tab: "documents",
     },
   ],
   start: [
@@ -72,7 +71,7 @@ const guides: Record<GuidePhase, Step[]> = {
     {
       title: "范围已确认，继续匹配",
       description:
-        "点击“按已选产品继续评估”，Agent 才会按照确认的产品及版本匹配销售项、核实证据。确认范围本身不会自动启动下一轮任务。",
+        "在对话框下方点击“开始快速初评”或选择深度评估，Agent 才会按照确认的产品及版本匹配销售项、核实证据。确认范围本身不会自动启动下一轮任务。",
       target: "continue",
       tab: "products",
     },

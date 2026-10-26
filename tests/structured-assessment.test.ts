@@ -1,3 +1,5 @@
+import { WikiClient } from "../server/wiki.js";
+import { runQuickAssessment } from "../server/quick-assessment.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createReport } from "../server/reports.js";
@@ -26,6 +28,20 @@ import type { AssessmentInput } from "../shared/domain.js";
 
 test("结构化评估：固定发布、按版本检索、稳定ID入库和采购汇总，历史项目不切换", async () => {
   const db = await openDatabase("", "memory://");
+  const originalSearch = WikiClient.prototype.search;
+  const scopes: string[][] = [];
+  WikiClient.prototype.search = async (_id, _query, _topK, _content, paths) => {
+    assert.ok(paths, "published retrieval must prefilter Wiki by source paths");
+    scopes.push(paths);
+    return {
+      scopeApplied: true,
+      results: paths.map((path) => ({
+        path,
+        score: 0.8,
+        content: "UNTRUSTED LIVE CONTENT",
+      })),
+    };
+  };
   try {
     await migrate(db);
     const uid = randomUUID(),
@@ -125,6 +141,137 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       selected: [{ name: "产品A", version: "v1", path: "" }],
       strategy: "",
     });
+    let modelCalls = 0;
+    const progress: Record<string, unknown>[] = [];
+    const judge = async (
+      packets: import("../server/quick-assessment.js").QuickPacket[],
+    ) => {
+      modelCalls++;
+      return JSON.stringify({
+        assessments: packets.map((p) => {
+          const c = p.candidates[0];
+          const text = c.excerpts.map((e) => e.quote).join("\n");
+          const snapshot = text
+            .split("\n")
+            .findIndex((l) => l === "支持实时预览");
+          assert.ok(snapshot >= 0);
+          const line = c.excerpts[0].lineStart + snapshot;
+          return {
+            requirementId: p.requirement.id,
+            selections: [
+              {
+                candidateIndex: 0,
+                purpose: "purchase",
+                reason: "支持实时预览",
+              },
+            ],
+            checks: [
+              {
+                subrequirementId: p.requirement.subrequirements![0].id,
+                level: "exact",
+                direction: "实时预览",
+                reason: "技术规格明确支持实时预览",
+                delivery: "native",
+                deliveryConfirmed: true,
+                evidence: [
+                  {
+                    candidateIndex: 0,
+                    lineStart: line,
+                    lineEnd: line,
+                    quote: "支持实时预览",
+                  },
+                ],
+              },
+            ],
+          };
+        }),
+      });
+    };
+    assert.equal(
+      await runQuickAssessment(
+        db,
+        pid,
+        rid,
+        new AbortController().signal,
+        judge,
+        async (p) => {
+          progress.push(p);
+        },
+      ),
+      true,
+    );
+    assert.equal(modelCalls, 1);
+    const quickRows = await assessmentRows(db, pid);
+    assert.equal(quickRows.length, 2);
+    assert.ok(quickRows.every((r) => !r.reviewed));
+    await runQuickAssessment(
+      db,
+      pid,
+      rid,
+      new AbortController().signal,
+      judge,
+      async () => {},
+    );
+    assert.equal(
+      modelCalls,
+      1,
+      "resume must not call model for already saved current-scope rows",
+    );
+    assert.equal(progress.at(-1)?.saved, 2);
+    await db.query(
+      "UPDATE assessments SET source='human',reviewed=true WHERE project_id=$1 AND requirement_id='T-1'",
+      [pid],
+    );
+    await db.query(
+      "DELETE FROM assessments WHERE project_id=$1 AND requirement_id='T-2'",
+      [pid],
+    );
+    let failedCalls = 0;
+    await assert.rejects(
+      runQuickAssessment(
+        db,
+        pid,
+        rid,
+        new AbortController().signal,
+        async () => {
+          failedCalls++;
+          throw new Error("模拟模型暂时不可用");
+        },
+        async () => {},
+      ),
+      /1 条初评未完成/,
+    );
+    assert.equal(failedCalls, 2, "bounded retry");
+    assert.equal(
+      (await assessmentRows(db, pid)).length,
+      1,
+      "failed batch must not erase saved results",
+    );
+    await runQuickAssessment(
+      db,
+      pid,
+      rid,
+      new AbortController().signal,
+      judge,
+      async () => {},
+    );
+    assert.equal(modelCalls, 2, "only unsaved clause rejudged");
+    assert.equal(
+      (await assessmentRows(db, pid)).find((r) => r.requirementId === "T-1")
+        ?.source,
+      "human",
+    );
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await db.query(
+      "DELETE FROM assessments WHERE project_id=$1 AND requirement_id='T-2'",
+      [pid],
+    );
+    await assert.rejects(
+      runQuickAssessment(db, pid, rid, cancelled.signal, judge, async () => {}),
+    );
+    assert.equal(modelCalls, 2, "cancel must not call model");
+    await db.query("DELETE FROM assessments WHERE project_id=$1", [pid]);
     const result = await searchSelected(
       db,
       pid,
@@ -136,6 +283,9 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       "T-1.1",
     );
     assert.equal(result.results.length, 1);
+    assert.deepEqual(scopes[0], ["wiki/entities/sale-items/video-v1.md"]);
+    assert.equal("mode" in result && result.mode, "structured_wiki_scoped");
+    assert.ok(!JSON.stringify(result).includes("UNTRUSTED LIVE CONTENT"));
     const hit = result.results[0];
     assert.equal("saleItemId" in hit && hit.saleItemId, "s1");
     const path = knowledgePath(releaseId, "sale-items", "s1");
@@ -441,6 +591,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
     );
     assert.equal(await projectKnowledge(db, old, true), null);
   } finally {
+    WikiClient.prototype.search = originalSearch;
     await db.close();
   }
 });

@@ -15,6 +15,7 @@ export const criteriaSchema = z.object({
   delivery: z.string().min(1),
 });
 export const requirementSchema = z.object({
+  extractionMode: z.enum(["quick", "agent"]).optional(),
   id: z.string().regex(/^T-\d+$/),
   documentId: z.string().uuid(),
   module: z.string().min(1),
@@ -223,6 +224,7 @@ export interface ChatMessage {
   run_id: string | null;
 }
 export interface Run {
+  evaluation_mode?: "quick" | "agent";
   id: string;
   conversation_id: string;
   project_id: string;
@@ -318,6 +320,18 @@ export interface Workspace {
   runs: Run[];
 }
 export interface SettingsView {
+  activeProfileId: string;
+  profiles: {
+    models: string[];
+    id: string;
+    name: string;
+    modelBaseUrl: string;
+    model: string;
+    modelApiKeySet: boolean;
+    contextWindow: number;
+    maxOutputTokens: number;
+    requireRequirementConfirmation: boolean;
+  }[];
   modelBaseUrl: string;
   model: string;
   modelApiKeySet: boolean;

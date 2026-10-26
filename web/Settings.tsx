@@ -15,6 +15,7 @@ import { ApiOutlined, CheckCircleOutlined } from "@ant-design/icons";
 import type { SettingsView, WikiSettingsView } from "../shared/domain";
 import { api, post } from "./api";
 import { KnowledgePublishing } from "./KnowledgePublishing";
+import { createRequestId } from "./request-id";
 export function Settings({
   open,
   onClose,
@@ -28,6 +29,7 @@ export function Settings({
 }) {
   const [form] = Form.useForm();
   const defaultWikiId = Form.useWatch("defaultWikiProjectId", form);
+  const connectionModels: string[] = Form.useWatch("models", form) ?? [];
   const { message } = AntApp.useApp();
   const [settings, setSettings] = useState<
     SettingsView | WikiSettingsView | null
@@ -35,6 +37,67 @@ export function Settings({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [testing, setTesting] = useState("");
+  const [profileId, setProfileId] = useState("");
+  const [profileName, setProfileName] = useState("");
+  function showAgent(s: SettingsView) {
+    setProfileId(s.activeProfileId);
+    setProfileName(
+      s.profiles.find((p) => p.id === s.activeProfileId)?.name ?? "默认连接",
+    );
+    form.setFieldsValue({
+      ...s,
+      models:
+        s.profiles.find((p) => p.id === s.activeProfileId)?.models ??
+        [s.model].filter(Boolean),
+      modelApiKey: "",
+    });
+  }
+  async function selectProfile(id: string) {
+    setLoading(true);
+    try {
+      const result = await api<SettingsView>("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ activeProfileId: id }),
+      });
+      setSettings(result);
+      showAgent(result);
+      setError("");
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  function newProfile() {
+    setProfileId(createRequestId());
+    setProfileName("");
+    form.setFieldsValue({
+      modelBaseUrl: "https://api.openai.com/v1",
+      model: "",
+      models: [],
+      modelApiKey: "",
+      contextWindow: 64000,
+      maxOutputTokens: 8192,
+      requireRequirementConfirmation: true,
+    });
+  }
+  async function removeProfile() {
+    setLoading(true);
+    try {
+      const result = await api<SettingsView>("/settings", {
+        method: "PUT",
+        body: JSON.stringify({ removeProfileId: profileId }),
+      });
+      setSettings(result);
+      showAgent(result);
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
   const [wikiProjects, setWikiProjects] = useState<
     { id: string; name: string }[]
   >([]);
@@ -64,6 +127,7 @@ export function Settings({
           if (controller.signal.aborted) return;
           setSettings(s);
           form.setFieldsValue({ ...s, modelApiKey: "", wikiToken: "" });
+          if (section === "agent") showAgent(s as SettingsView);
           if (section === "wiki") void loadWikiProjects();
         })
         .catch((e) => {
@@ -76,12 +140,15 @@ export function Settings({
     setLoading(true);
     try {
       if (!settings) throw new Error("配置尚未加载完成，请稍后重试");
+      if (section === "agent" && !profileName.trim())
+        throw new Error("请输入连接名称");
       const fields =
         section === "wiki"
           ? ["wikiBaseUrl", "wikiToken", "defaultWikiProjectId"]
           : [
               "modelBaseUrl",
               "model",
+              "models",
               "modelApiKey",
               "contextWindow",
               "maxOutputTokens",
@@ -92,7 +159,12 @@ export function Settings({
       const payload =
         section === "wiki"
           ? { ...values, wikiToken: values.wikiToken || undefined }
-          : { ...values, modelApiKey: values.modelApiKey || undefined };
+          : {
+              ...values,
+              profileId,
+              profileName: profileName.trim(),
+              modelApiKey: values.modelApiKey || undefined,
+            };
       const result = await api<SettingsView | WikiSettingsView>(
         section === "wiki" ? "/settings/wiki" : "/settings",
         {
@@ -101,6 +173,7 @@ export function Settings({
         },
       );
       setSettings(result);
+      if (section === "agent") showAgent(result as SettingsView);
       form.setFieldsValue({ modelApiKey: "", wikiToken: "" });
       message.success("连接配置已保存");
       onSaved();
@@ -171,6 +244,55 @@ export function Settings({
       )}
       <Form layout="vertical" form={form} requiredMark={false}>
         <div hidden={section !== "agent"}>
+          <Form.Item label="当前模型连接">
+            <div style={{ display: "flex", gap: 8 }}>
+              <Select
+                style={{ flex: 1 }}
+                disabled={loading}
+                value={
+                  settings &&
+                  "profiles" in settings &&
+                  settings.profiles.some((p) => p.id === profileId)
+                    ? profileId
+                    : undefined
+                }
+                placeholder="新建连接，保存后启用"
+                options={
+                  settings && "profiles" in settings
+                    ? settings.profiles.map((p) => ({
+                        value: p.id,
+                        label: `${p.name} · ${p.model || "未配置模型"}`,
+                      }))
+                    : []
+                }
+                onChange={(id) => void selectProfile(id)}
+              />
+              <Button onClick={newProfile} disabled={loading}>
+                新增连接
+              </Button>
+              <Button
+                danger
+                onClick={() => void removeProfile()}
+                disabled={
+                  loading ||
+                  !settings ||
+                  !("profiles" in settings) ||
+                  settings.profiles.length < 2 ||
+                  !settings.profiles.some((p) => p.id === profileId)
+                }
+              >
+                删除
+              </Button>
+            </div>
+          </Form.Item>
+          <Form.Item label="连接名称" required>
+            <Input
+              value={profileName}
+              maxLength={100}
+              onChange={(e) => setProfileName(e.target.value)}
+              placeholder="例如：DeepSeek 内网"
+            />
+          </Form.Item>
           <Divider orientation="left">模型连接</Divider>
           <Form.Item
             label="OpenAI 兼容 Base URL"
@@ -184,17 +306,48 @@ export function Settings({
           </Form.Item>
           <div className="form-two">
             <Form.Item
-              label="模型名称"
+              label="此连接可用的模型"
+              name="models"
+              rules={[
+                {
+                  required: true,
+                  type: "array",
+                  min: 1,
+                  message: "请输入至少一个模型 ID",
+                },
+              ]}
+              extra="输入模型 ID 后按 Enter，可添加多个；共用此连接的地址和密钥。"
+            >
+              <Select
+                mode="tags"
+                tokenSeparators={[",", "，"]}
+                placeholder="例如 deepseek-chat、deepseek-reasoner"
+                open={false}
+                onChange={(models: string[]) => {
+                  if (!models.includes(form.getFieldValue("model")))
+                    form.setFieldValue("model", models[0] ?? "");
+                }}
+              />
+            </Form.Item>
+            <Form.Item
+              label="当前使用的模型"
               name="model"
               rules={[{ required: true, message: "请输入模型名称" }]}
             >
-              <Input placeholder="服务商提供的模型 ID" />
+              <Select
+                placeholder="选择此连接中的模型"
+                options={connectionModels.map((model) => ({
+                  value: model,
+                  label: model,
+                }))}
+              />
             </Form.Item>
             <Form.Item
               label={
                 settings &&
                 "modelApiKeySet" in settings &&
-                settings.modelApiKeySet
+                settings.profiles.find((p) => p.id === profileId)
+                  ?.modelApiKeySet
                   ? "API Key · 已配置"
                   : "API Key"
               }
@@ -204,7 +357,8 @@ export function Settings({
                 placeholder={
                   settings &&
                   "modelApiKeySet" in settings &&
-                  settings.modelApiKeySet
+                  settings.profiles.find((p) => p.id === profileId)
+                    ?.modelApiKeySet
                     ? "留空保留已保存密钥"
                     : "本地无鉴权模型可留空"
                 }
@@ -222,6 +376,12 @@ export function Settings({
           </div>
           <Button
             onClick={() => void test("model")}
+            disabled={
+              loading ||
+              !settings ||
+              !("activeProfileId" in settings) ||
+              settings.activeProfileId !== profileId
+            }
             loading={testing === "model"}
             icon={<CheckCircleOutlined />}
           >

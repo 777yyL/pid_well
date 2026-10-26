@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { guidePhase } from "../web/workflow-guide.js";
+import {
+  assessmentStartPrompt,
+  guidePhase,
+  startAssessmentPrompt,
+} from "../web/workflow-guide.js";
+
+test("快速初评先保留原行并等待产品范围，深度评估保留原提示", () => {
+  const prompt = assessmentStartPrompt("quick");
+  assert.match(prompt, /保留原清单行/);
+  assert.match(prompt, /不另行要求用户确认条款/);
+  assert.match(prompt, /此阶段不要执行销售项匹配/);
+  assert.match(prompt, /用户确认范围并点击继续初评后才开始批量评估/);
+  assert.equal(assessmentStartPrompt("agent"), startAssessmentPrompt);
+});
 
 test("操作引导按真实项目阶段推进，执行及归档期间不打断", () => {
   const state: Parameters<typeof guidePhase>[0] = {

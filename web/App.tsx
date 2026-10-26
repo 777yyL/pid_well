@@ -499,6 +499,9 @@ function WorkspaceShell({
                     onSend={state.send}
                     onCancel={() => void state.cancel()}
                     onUpload={() => upload.current?.()}
+                    scopeConfirmed={
+                      state.workspace.productScope.status === "confirmed"
+                    }
                     hasDocuments={state.workspace.documents.some(
                       (d) => d.status === "ready",
                     )}

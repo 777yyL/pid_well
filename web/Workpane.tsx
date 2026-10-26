@@ -27,14 +27,12 @@ import {
   Collapse,
   Dropdown,
   Tooltip,
-  Pagination,
 } from "antd";
 import {
   UploadOutlined,
   FileTextOutlined,
   DownloadOutlined,
   CheckOutlined,
-  ArrowRightOutlined,
   EditOutlined,
   AuditOutlined,
 } from "@ant-design/icons";
@@ -49,7 +47,7 @@ import { api, post } from "./api";
 import { Markdown } from "./Chat";
 import { ProductSelection } from "./ProductSelection";
 import { ShareDialog } from "./ShareDialog";
-import { KnowledgeReader, KnowledgeMarkdown } from "./KnowledgeReader";
+import { KnowledgeMarkdown } from "./KnowledgeReader";
 const levels = {
   exact: { label: "完全满足", color: "success" },
   partial: { label: "部分满足", color: "warning" },
@@ -75,14 +73,8 @@ export function Workpane({
   const fileInput = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState("requirements");
   guideViewRef.current = setTab;
-  const [knowledgePage, setKnowledgePage] = useState(1);
-  const [knowledgeSearch, setKnowledgeSearch] = useState("");
-  const [knowledge, setKnowledge] = useState<{
-    id: string;
-    start?: number;
-    end?: number;
-  } | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadDialog, setUploadDialog] = useState(false);
   const uploadLock = useRef(false);
   const [uploadItems, setUploadItems] = useState<
     {
@@ -107,7 +99,6 @@ export function Workpane({
   const [form] = Form.useForm();
   const [audit, setAudit] = useState<Record<string, unknown>[] | null>(null);
   uploadRef.current = () => {
-    setTab("documents");
     fileInput.current?.click();
   };
   const requirements = workspace.requirements;
@@ -122,7 +113,7 @@ export function Workpane({
     if (!files.length || uploadLock.current) return;
     uploadLock.current = true;
     setUploading(true);
-    setTab("documents");
+    setUploadDialog(true);
     setUploadItems(
       files.map((file) => ({ name: file.name, status: "waiting" })),
     );
@@ -223,10 +214,10 @@ export function Workpane({
   function showRequirement(item: Requirement) {
     void openDocument(item.documentId, item.lineStart, item.lineEnd);
   }
-  async function openEvidence(snapshotId: string, start: number, end: number) {
-    setKnowledge({ id: snapshotId, start, end });
-  }
-  async function exportReport(format: string) {
+  async function exportReport(
+    format: string,
+    stage: "formal" | "preliminary" = "formal",
+  ) {
     setBusy(true);
     try {
       const result = await post<{ id: string }>(
@@ -234,6 +225,7 @@ export function Workpane({
         {
           format: format === "sales" ? "xlsx" : format,
           kind: format === "sales" ? "sales" : "full",
+          stage,
         },
       );
       window.location.assign(`/api/artifacts/${result.id}`);
@@ -313,14 +305,6 @@ export function Workpane({
           <h3>招标文件</h3>
           <p>一个子系统一份文件，可一次选择多份；原文及行号分别保留。</p>
         </div>
-        <Button
-          data-guide="upload"
-          icon={<UploadOutlined />}
-          loading={uploading}
-          onClick={() => fileInput.current?.click()}
-        >
-          批量上传文件
-        </Button>
       </div>
       {!!uploadItems.length && (
         <section aria-label="批量上传进度" aria-live="polite">
@@ -420,21 +404,7 @@ export function Workpane({
           </div>
         ))
       ) : (
-        <div
-          className="upload-empty"
-          onClick={() => fileInput.current?.click()}
-        >
-          <UploadOutlined />
-          <h3>上传项目的子系统招标文件</h3>
-          <p>
-            支持 DOCX、XLSX、PDF、MD、TXT
-            <br />
-            可一次选择多份，每个文件最大 25 MB
-          </p>
-          <Button type="primary" loading={uploading}>
-            选择一份或多份文件
-          </Button>
-        </div>
+        <Empty description="暂无招标文件，请在对话框下方上传" />
       )}
       <Alert
         className="document-note"
@@ -514,8 +484,20 @@ export function Workpane({
             title: "状态",
             width: 86,
             render: (_, r) => (
-              <Tag bordered={false} color={r.confirmed ? "success" : "warning"}>
-                {r.confirmed ? "已确认" : "待确认"}
+              <Tag
+                title={
+                  r.extractionMode === "quick"
+                    ? "自动按原文抽取，可继续人工核对和编辑"
+                    : undefined
+                }
+                bordered={false}
+                color={r.confirmed ? "success" : "warning"}
+              >
+                {r.extractionMode === "quick"
+                  ? "自动抽取"
+                  : r.confirmed
+                    ? "已确认"
+                    : "待确认"}
               </Tag>
             ),
           },
@@ -627,6 +609,32 @@ export function Workpane({
           ),
         }}
       />
+      <div className="export-bar">
+        <div>
+          <b>初评结果 · 待复核</b>
+          <small>先查看已保存结果；未匹配及未复核条款会明确标出</small>
+        </div>
+        <Dropdown
+          disabled={!workspace.assessments.length || busy}
+          menu={{
+            items: ["xlsx", "sales", "html", "csv"].map((format) => ({
+              key: format,
+              label:
+                format === "sales"
+                  ? "初评销售项清单 XLSX"
+                  : `初评报告 ${format.toUpperCase()}`,
+            })),
+            onClick: ({ key }) => void exportReport(key, "preliminary"),
+          }}
+        >
+          <Button
+            icon={<DownloadOutlined />}
+            disabled={!workspace.assessments.length || busy}
+          >
+            导出初评
+          </Button>
+        </Dropdown>
+      </div>
       <div className="export-bar" data-guide="export">
         <div>
           <b>正式评估报告</b>
@@ -803,105 +811,6 @@ export function Workpane({
         onChange={setTab}
         items={[
           {
-            key: "knowledge",
-            label: `知识库 ${workspace.snapshots.length}`,
-            children: (
-              <div className="knowledge-library">
-                <div className="knowledge-library-header">
-                  <h3>项目知识库</h3>
-                  <p>
-                    Agent 已读取的 Markdown 页面与证据快照。点击卡片查看正文。
-                  </p>
-                  <Input.Search
-                    aria-label="搜索知识库来源"
-                    placeholder="搜索来源名称或路径"
-                    value={knowledgeSearch}
-                    onChange={(e) => {
-                      setKnowledgeSearch(e.target.value);
-                      setKnowledgePage(1);
-                    }}
-                    allowClear
-                  />
-                </div>
-                <div className="knowledge-card-grid">
-                  {workspace.snapshots
-                    .filter((s) =>
-                      `${s.title ?? ""} ${s.path}`
-                        .toLowerCase()
-                        .includes(knowledgeSearch.toLowerCase()),
-                    )
-                    .slice((knowledgePage - 1) * 12, knowledgePage * 12)
-                    .map((s) => {
-                      const quote = results
-                        .flatMap((r) => r.evidence)
-                        .find((e) => e.snapshotId === s.id)?.quote;
-                      return (
-                        <article className="knowledge-small-card" key={s.id}>
-                          <span className="knowledge-card-label">
-                            <FileTextOutlined /> Markdown · 证据快照
-                          </span>
-                          <button
-                            className="knowledge-card-title"
-                            onClick={() => setKnowledge({ id: s.id })}
-                          >
-                            {s.title ||
-                              s.path
-                                .split(/[\\/]/)
-                                .pop()
-                                ?.replace(/\.md$/i, "")}
-                          </button>
-                          <p className="knowledge-card-path" title={s.path}>
-                            {s.path}
-                          </p>
-                          <div className="knowledge-card-preview">
-                            {quote ? (
-                              <KnowledgeMarkdown text={quote} />
-                            ) : (
-                              <p>原文按需加载，查看产品说明与技术规格。</p>
-                            )}
-                          </div>
-                          <Button
-                            type="link"
-                            onClick={() => setKnowledge({ id: s.id })}
-                          >
-                            阅读原文 <ArrowRightOutlined />
-                          </Button>
-                        </article>
-                      );
-                    })}
-                </div>
-                {!workspace.snapshots.filter((s) =>
-                  `${s.title ?? ""} ${s.path}`
-                    .toLowerCase()
-                    .includes(knowledgeSearch.toLowerCase()),
-                ).length && (
-                  <Empty
-                    image={Empty.PRESENTED_IMAGE_SIMPLE}
-                    description={
-                      knowledgeSearch
-                        ? "没有匹配的知识库来源"
-                        : "Agent 读取知识库后，证据页面将在这里积累"
-                    }
-                  />
-                )}
-                <Pagination
-                  current={knowledgePage}
-                  pageSize={12}
-                  total={
-                    workspace.snapshots.filter((s) =>
-                      `${s.title ?? ""} ${s.path}`
-                        .toLowerCase()
-                        .includes(knowledgeSearch.toLowerCase()),
-                    ).length
-                  }
-                  onChange={setKnowledgePage}
-                  hideOnSinglePage
-                  showSizeChanger={false}
-                />
-              </div>
-            ),
-          },
-          {
             key: "requirements",
             label: (
               <>
@@ -932,19 +841,18 @@ export function Workpane({
             ),
           },
           { key: "results", label: "匹配结果", children: assessments },
-          {
-            key: "documents",
-            label: (
-              <>
-                文件{" "}
-                <span className="tab-count">{workspace.documents.length}</span>
-              </>
-            ),
-            children: docs,
-          },
           { key: "activity", label: "项目留痕", children: activity },
         ]}
       />
+      <Modal
+        title="上传文件"
+        open={uploadDialog}
+        onCancel={() => setUploadDialog(false)}
+        footer={null}
+        width={680}
+      >
+        {docs}
+      </Modal>
       <Drawer
         title={source?.title}
         open={!!source}
@@ -1103,15 +1011,9 @@ export function Workpane({
                     知识库证据 · Markdown
                   </span>
                   <KnowledgeMarkdown text={e.quote} />
-                  <button
-                    className="text-link"
-                    onClick={() =>
-                      void openEvidence(e.snapshotId, e.lineStart, e.lineEnd)
-                    }
-                  >
+                  <small>
                     {snap?.path ?? e.snapshotId} · L{e.lineStart}–L{e.lineEnd}
-                    <ArrowRightOutlined />
-                  </button>
+                  </small>
                 </div>
               );
             })}
@@ -1194,7 +1096,6 @@ export function Workpane({
           </details>
         ))}
       </Drawer>
-      <KnowledgeReader target={knowledge} onClose={() => setKnowledge(null)} />
     </section>
   );
 }

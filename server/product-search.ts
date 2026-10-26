@@ -378,18 +378,30 @@ export async function searchSelected(
       query,
       topK,
       subrequirementId,
+      undefined,
+      signal,
+      recallCache,
     );
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);
   // Search only nominates candidates. Full pages below provide the evidence;
   // membership and version checks still use the selected product directory.
-  let recall = recallCache.get(query);
+  const recallLimit = Math.min(50, Math.max(5, topK * 2));
+  const cacheKey = JSON.stringify([
+    wikiId,
+    catalog.scopeRevision,
+    [...paths].sort(),
+    query,
+    recallLimit,
+  ]);
+  let recall = recallCache.get(cacheKey);
   if (!recall) {
-    recall = wiki.search(wikiId, query, 50, false);
-    recallCache.set(query, recall);
+    recall = wiki.search(wikiId, query, recallLimit, false, paths);
+    recallCache.set(cacheKey, recall);
   }
   const response = await recall;
   if (!Array.isArray(response.results))
     throw new AppError(502, "知识库搜索响应缺少 results 字段，不能视为未命中");
+  const responseResults = response.results;
   const allowed = new Set(paths);
   const recalledPaths = [
     ...new Set(
@@ -434,43 +446,27 @@ export async function searchSelected(
     if (candidates.length >= Math.min(20, Math.max(5, topK * 2))) break;
   }
   const tokens = retrievalTokens(query);
-  const hits = pages
-    .flatMap((page) => {
-      const owners = catalog.products.filter(
-        (p) => p.paths.includes(page.path) && belongs(page, p.choice),
+  const hits = candidates.map((path) => {
+    const page = cachedPages.get(path)!;
+    const entity = parseSaleEntity(page.content);
+    const hit = responseResults.find((value: unknown) => {
+      const row = value as Record<string, unknown>;
+      return wikiFilePaths(row.path ?? row.filePath ?? row.file_path).includes(
+        path,
       );
-      if (!owners.length) return [];
-      const entity = parseSaleEntity(page.content),
-        text = page.content.toLowerCase();
-      const score = tokens.reduce(
-        (total, t) =>
-          total +
-          (text.includes(t)
-            ? (entity.title.toLowerCase().includes(t)
-                ? 4
-                : entity.specification.toLowerCase().includes(t)
-                  ? 3
-                  : entity.description.toLowerCase().includes(t)
-                    ? 2
-                    : 1) * t.length
-            : 0),
-        0,
-      );
-      return score || candidates.includes(page.path)
-        ? [
-            {
-              path: page.path,
-              snapshotId: page.id,
-              sales: entity.title,
-              products: owners.map((p) => p.choice),
-              score,
-              moduleId: entity.moduleId,
-              pageContent: page.content,
-            },
-          ]
-        : [];
-    })
-    .sort((a, b) => b.score - a.score);
+    }) as Record<string, unknown> | undefined;
+    return {
+      path,
+      snapshotId: page.id,
+      sales: entity.title,
+      products: catalog.products
+        .filter((p) => p.paths.includes(path) && belongs(page, p.choice))
+        .map((p) => p.choice),
+      score: typeof hit?.score === "number" ? hit.score : 0,
+      moduleId: entity.moduleId,
+      pageContent: page.content,
+    };
+  });
   const traceId = await audit(
     db,
     projectId,
@@ -486,7 +482,7 @@ export async function searchSelected(
       paths: hits.slice(0, topK).map((h) => h.path),
       directoryEmpty: !paths.length,
       elapsedMs: Date.now() - started,
-      recallLimit: 50,
+      recallLimit,
       candidates: candidates.length,
       entityReads,
     },
@@ -518,11 +514,13 @@ async function searchStructured(
   topK: number,
   subrequirementId?: string,
   fallback?: { reason: string; explanation: string },
+  signal?: AbortSignal,
+  recallCache = new Map<string, Promise<Record<string, unknown>>>(),
 ) {
   const started = Date.now(),
     tokens = retrievalTokens(query);
   const allowed = new Set(catalog.products.flatMap((p) => p.paths));
-  const ranked = release.data.saleItems
+  let ranked = release.data.saleItems
     .flatMap((s) => {
       const path = knowledgePath(release.id, "sale-items", s.sale_item_id);
       if (!allowed.has(path)) return [];
@@ -547,6 +545,51 @@ async function searchStructured(
       return score ? [{ sale: s, path, score }] : [];
     })
     .sort((a, b) => b.score - a.score);
+  const scopedSales = release.data.saleItems.filter((sale) =>
+    allowed.has(knowledgePath(release.id, "sale-items", sale.sale_item_id)),
+  );
+  const sources = new Map<string, typeof scopedSales>();
+  for (const sale of scopedSales) {
+    const paths = wikiFilePaths(sale.source_path);
+    if (paths.length !== 1 || paths[0].startsWith("wiki/structured/")) continue;
+    sources.set(paths[0], [...(sources.get(paths[0]) ?? []), sale]);
+  }
+  let mode = "structured_keyword";
+  let retrievalNote = "没有可用 source_path，使用固定发布数据关键词召回。";
+  if (sources.size) {
+    const { wiki, wikiId } = await boundWiki(db, projectId, signal);
+    const sourcePaths = [...sources.keys()].sort();
+    const cacheKey = JSON.stringify([
+      wikiId,
+      release.id,
+      sourcePaths,
+      query,
+      topK,
+    ]);
+    let recall = recallCache.get(cacheKey);
+    if (!recall) {
+      recall = wiki.search(wikiId, query, topK, false, sourcePaths);
+      recallCache.set(cacheKey, recall);
+    }
+    const response = await recall;
+    if (!Array.isArray(response.results))
+      throw new AppError(502, "知识库搜索响应缺少 results 字段");
+    ranked = response.results.flatMap((value: unknown) => {
+      const hit = value as Record<string, unknown>;
+      const paths = wikiFilePaths(hit.path ?? hit.filePath ?? hit.file_path);
+      if (paths.length !== 1)
+        throw new AppError(502, "知识库搜索结果缺少可识别路径");
+      const sales = sources.get(paths[0]);
+      if (!sales) throw new AppError(502, "知识库返回范围外搜索结果");
+      return sales.map((sale) => ({
+        sale,
+        path: knowledgePath(release.id, "sale-items", sale.sale_item_id),
+        score: typeof hit.score === "number" ? hit.score : 0,
+      }));
+    });
+    mode = "structured_wiki_scoped";
+    retrievalNote = `Wiki 范围召回；证据仅使用固定发布数据。${scopedSales.length - [...sources.values()].flat().length} 项缺少可用 source_path；共享来源的销售项分别保留发布版本身份。`;
+  }
   const results = [];
   for (const hit of ranked.slice(0, topK)) {
     const page = await snapshotPage(
@@ -584,7 +627,7 @@ async function searchStructured(
       matchCount: ranked.length,
       paths: results.map((r) => r.path),
       elapsedMs: Date.now() - started,
-      mode: "structured_keyword",
+      mode,
       ...fallback,
     },
   );
@@ -596,10 +639,12 @@ async function searchStructured(
     scopeRevision: catalog.scopeRevision,
     total: ranked.length,
     results,
-    mode: "structured_keyword",
+    mode,
     knowledgeReleaseId: release.id,
     elapsedMs: Date.now() - started,
-    note: "检索限定于项目固定发布数据，当前为关键词召回，不是满足性结论。全局补查结果只能作为替代建议，确认加入范围后才能正式匹配。片段为发布数据的固定渲染，可按行号引用。",
+    note:
+      retrievalNote +
+      " 召回不是满足性结论；补查仅作替代建议。片段为发布数据固定渲染，可按行号引用。",
   };
 }
 
@@ -732,6 +777,7 @@ export async function searchGlobalFallback(
       input.topK,
       undefined,
       { reason: input.reason, explanation: input.explanation },
+      signal,
     );
   }
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);

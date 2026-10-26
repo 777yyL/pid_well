@@ -614,6 +614,65 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       409,
     );
     await assert.rejects(() => createReport(db, projectId, "xlsx"), /已复核/);
+    await db.query(
+      "INSERT INTO requirements(id,project_id,data) VALUES($1,$2,$3)",
+      [
+        "T-missing",
+        projectId,
+        JSON.stringify({ ...requirement, id: "T-missing" }),
+      ],
+    );
+    try {
+      for (const format of ["xlsx", "html", "csv"] as const) {
+        const preliminary = await createReport(
+          db,
+          projectId,
+          format,
+          "full",
+          undefined,
+          "preliminary",
+        );
+        assert.match(preliminary.name, /初评.*待复核/);
+        assert.equal(preliminary.manifest.stage, "preliminary");
+        assert.equal(preliminary.manifest.requirements[0].reviewed, false);
+        assert.deepEqual(preliminary.manifest.assessmentCoverage.missing, [
+          "T-missing",
+        ]);
+        const [artifact] = await db.query<{ storage_name: string }>(
+          "SELECT storage_name FROM artifacts WHERE id=$1",
+          [preliminary.id],
+        );
+        const path = resolve(
+          config.dataDir,
+          "artifacts",
+          artifact.storage_name,
+        );
+        if (format === "xlsx") {
+          const book = new ExcelJS.Workbook();
+          await book.xlsx.readFile(path);
+          assert.equal(
+            book.getWorksheet("初评待复核")?.getCell("B1").text,
+            "初评／待复核",
+          );
+          assert.equal(
+            book.getWorksheet("初评待复核")?.getCell("B6").text,
+            "T-missing",
+          );
+        } else {
+          const text = await readFile(path, "utf8");
+          assert.match(text, /初评／待复核/);
+          assert.match(text, /T-missing/);
+          assert.match(text, /不作为最终采购或报价依据/);
+          if (format === "html") assert.doesNotMatch(text, /AI 自检完成/);
+        }
+      }
+    } finally {
+      await db.query("DELETE FROM requirements WHERE project_id=$1 AND id=$2", [
+        projectId,
+        "T-missing",
+      ]);
+    }
+
     assert.equal(
       (await request("POST", `/api/projects/${projectId}/shares`, { days: 30 }))
         .statusCode,
@@ -669,6 +728,8 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     "报告从同一份复核结果生成，保存版本证据并防止公式注入",
     async () => {
       const report = await createReport(db, projectId, "xlsx");
+      assert.equal(report.manifest.stage, "formal");
+      assert.doesNotMatch(report.name, /初评/);
       const [record] = await db.query<{
         storage_name: string;
         manifest: { requirements: { revision: number }[] };
@@ -1167,10 +1228,11 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     requireRequirementConfirmation: true,
   });
   assert.equal(saved.statusCode, 200, saved.body);
-  const [stored] = await db.query<{ value: { modelApiKey: string } }>(
+  const [stored] = await db.query<{ value: { profiles: {modelApiKey:string}[] } }>(
     "SELECT value FROM user_agent_settings LIMIT 1",
   );
-  assert(!stored.value.modelApiKey.includes("test-secret-key"));
+  assert(stored.value.profiles.some(p=>!!p.modelApiKey));
+  assert(!JSON.stringify(stored.value).includes("test-secret-key"));
   assert(!saved.body.includes("test-secret-key"));
   await runner.start();
   async function waitRun(

@@ -300,8 +300,19 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
     assert.ok(pages[path], path);
     return pages[path];
   };
-  WikiClient.prototype.search = async (_id, query) => {
+  WikiClient.prototype.search = async (
+    _id,
+    query,
+    limit,
+    _content,
+    allowedPaths,
+  ) => {
     globalCalls++;
+    assert.ok(
+      allowedPaths?.includes(pageA) && !allowedPaths.includes(pageB),
+      "selected scope must be sent before TopK",
+    );
+    assert.ok(limit! < 50, "scoped recall should avoid global top50");
     return {
       results: [
         { path: pageB },

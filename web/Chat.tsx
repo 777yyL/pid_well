@@ -7,12 +7,15 @@ import {
   SyncOutlined,
   CheckOutlined,
   WarningOutlined,
-  FileSearchOutlined,
   MoreOutlined,
 } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { startAssessmentPrompt } from "./workflow-guide";
+import {
+  assessmentStartPrompt,
+  quickStageLabels,
+  type EvaluationMode,
+} from "./workflow-guide";
 import { activityCopy } from "./activity-copy";
 import { malformedToolText } from "../shared/agent-protocol";
 import type {
@@ -52,6 +55,16 @@ export function Markdown({ text }: { text: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
+        table: ({ children }) => (
+          <div
+            className="message-table"
+            role="region"
+            aria-label="消息表格"
+            tabIndex={0}
+          >
+            <table>{children}</table>
+          </div>
+        ),
         a: (props) => (
           <a {...props} target="_blank" rel="noopener noreferrer" />
         ),
@@ -73,6 +86,7 @@ export function Chat({
   onCancel,
   onUpload,
   hasDocuments,
+  scopeConfirmed = false,
   connectionError,
   archived = false,
 }: {
@@ -84,13 +98,15 @@ export function Chat({
   latestRun?: Run;
   sending: boolean;
   archived?: boolean;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, mode?: EvaluationMode) => Promise<void>;
   onCancel: () => void;
   onUpload: () => void;
   hasDocuments: boolean;
+  scopeConfirmed?: boolean;
   connectionError?: string;
 }) {
   const [draft, setDraft] = useState("");
+  const [startMode, setStartMode] = useState<EvaluationMode>("quick");
   const [planExpanded, setPlanExpanded] = useState(false);
   useEffect(() => setPlanExpanded(false), [conversation?.id]);
   const [now, setNow] = useState(Date.now());
@@ -134,6 +150,9 @@ export function Chat({
   const retry = sameConversation
     ? events.filter((e) => e.type === "run_retry").at(-1)
     : undefined;
+  const quickProgress = sameConversation
+    ? events.filter((e) => e.type === "quick_progress").at(-1)
+    : undefined;
   const heartbeatAge = progress
     ? Math.max(
         0,
@@ -147,12 +166,15 @@ export function Chat({
       )
     : 0;
   const currentTool = tools.findLast((t) => !t.finish);
-  const phase = currentTool
-    ? (names[String(currentTool.event.payload.toolName)] ?? "执行工具")
-    : String(progress?.payload.phase ?? "正在准备模型请求").replace(
-        /执行工具：(\w+)/,
-        (_, name: string) => names[name] ?? name,
-      );
+  const phase = quickProgress
+    ? (quickStageLabels[String(quickProgress.payload.stage)] ??
+      "正在执行快速初评")
+    : currentTool
+      ? (names[String(currentTool.event.payload.toolName)] ?? "执行工具")
+      : String(progress?.payload.phase ?? "正在准备模型请求").replace(
+          /执行工具：(\w+)/,
+          (_, name: string) => names[name] ?? name,
+        );
   const phaseTimestamp = currentTool
     ? new Date(currentTool.event.created_at).getTime()
     : Number(progress?.payload.phaseSince ?? now);
@@ -167,10 +189,10 @@ export function Chat({
     stale: heartbeatAge > 20,
     queued: activeRun?.status === "queued",
   });
-  async function submit(text = draft) {
+  async function submit(text = draft, mode: EvaluationMode = "agent") {
     if (!text.trim() || activeRun || sending || archived) return;
     try {
-      await onSend(text);
+      await onSend(text, mode);
       setDraft("");
     } catch {
       /* Notification is handled by workspace hook. */
@@ -188,24 +210,6 @@ export function Chat({
           <span className="eyebrow">AGENT SESSION</span>
           <h2>{conversation?.title ?? "开始一次评估"}</h2>
         </div>
-        <Tooltip
-          title={
-            hasDocuments
-              ? "阅读已解析文件，抽取条款并开始评估"
-              : "请先上传并解析招标文件"
-          }
-        >
-          <Button
-            data-guide="start"
-            type="primary"
-            size="small"
-            disabled={!hasDocuments || !!activeRun || sending || archived}
-            loading={sending}
-            onClick={() => void submit(startAssessmentPrompt)}
-          >
-            开始评标
-          </Button>
-        </Tooltip>
         <Tag bordered={false} color={activeRun ? "processing" : "default"}>
           {activeRun
             ? activeRun.status === "queued"
@@ -270,64 +274,7 @@ export function Chat({
       >
         {messages.length === 0 ? (
           <div className="chat-welcome">
-            <span className="welcome-icon">
-              <FileSearchOutlined />
-            </span>
-            <h2>开始项目评估</h2>
-            <p>
-              上传一份或多份子系统招标清单，Agent
-              会提取条款并检索产品证据。关键判断由你确认。
-            </p>
-            {!hasDocuments && (
-              <ol className="empty-project-guide">
-                <li>
-                  <b>上传文件</b>
-                  <span>提供招标清单或技术需求</span>
-                </li>
-                <li>
-                  <b>AI 评估</b>
-                  <span>提取条款，制定检索计划</span>
-                </li>
-                <li>
-                  <b>确认与选型</b>
-                  <span>核对原文，选择产品范围</span>
-                </li>
-                <li>
-                  <b>复核与分享</b>
-                  <span>确认结论，交付报告与清单</span>
-                </li>
-              </ol>
-            )}
-            <div className="suggestions">
-              <button
-                onClick={() =>
-                  hasDocuments ? void submit(startAssessmentPrompt) : onUpload()
-                }
-              >
-                <b>{hasDocuments ? "开始评标" : "上传招标文件"}</b>
-                <span>解析、抽取、匹配与复核</span>
-              </button>
-              <button
-                onClick={() =>
-                  setDraft(
-                    "请结合本项目的业务背景，从产品知识库分析适合的产品与版本，并列出选择依据。",
-                  )
-                }
-              >
-                <b>讨论产品方案</b>
-                <span>围绕场景检索产品与版本</span>
-              </button>
-              <button
-                onClick={() =>
-                  setDraft(
-                    "请复核已有评估中的部分满足和不满足项，检查能力方向、硬指标、依赖和缺失的销售项。",
-                  )
-                }
-              >
-                <b>核查评估风险</b>
-                <span>追问缺口、证据与交付约束</span>
-              </button>
-            </div>
+            <h2>评标AI</h2>
           </div>
         ) : (
           messages.map((item) => (
@@ -345,7 +292,11 @@ export function Chat({
                 </time>
               </div>
               <div className="message-content">
-                <Markdown text={item.content} />
+                {item.role === "user" ? (
+                  <div className="user-text">{item.content}</div>
+                ) : (
+                  <Markdown text={item.content} />
+                )}
               </div>
             </article>
           ))
@@ -414,6 +365,50 @@ export function Chat({
             此项目的另一个会话正在执行。请在左侧切换到该会话查看实时进度；本项目同时只能执行一个任务。
           </div>
         )}
+        {quickProgress && !activeRun && (
+          <Alert
+            className="quick-result"
+            type={
+              quickProgress.payload.stage === "failed"
+                ? "warning"
+                : quickProgress.payload.stage === "completed"
+                  ? "success"
+                  : "info"
+            }
+            showIcon
+            role="status"
+            aria-live="polite"
+            message={
+              quickStageLabels[String(quickProgress.payload.stage)] ??
+              "快速初评进度"
+            }
+            description={
+              <>
+                <div className="activity-counts">
+                  <span>
+                    清单条款 <b>{Number(quickProgress.payload.total ?? 0)}</b>
+                  </span>
+                  <span>
+                    已检索 <b>{Number(quickProgress.payload.retrieved ?? 0)}</b>
+                  </span>
+                  <span>
+                    已判断 <b>{Number(quickProgress.payload.judged ?? 0)}</b>
+                  </span>
+                  <span>
+                    已入库 <b>{Number(quickProgress.payload.saved ?? 0)}</b>
+                  </span>
+                  <span>
+                    待处理失败{" "}
+                    <b>{Number(quickProgress.payload.failed ?? 0)}</b>
+                  </span>
+                </div>
+                {Boolean(quickProgress.payload.message) && (
+                  <p>{String(quickProgress.payload.message)}</p>
+                )}
+              </>
+            }
+          />
+        )}
         {activeRun && sameConversation && (
           <div
             className={`live-activity ${connectionError || heartbeatAge > 20 ? "connection-warning" : ""}`}
@@ -422,12 +417,16 @@ export function Chat({
           >
             <div className="activity-title">
               <SyncOutlined spin={!connectionError && heartbeatAge <= 20} />
-              <b>{activity.title}</b>
+              <b>{quickProgress ? "快速初评" : activity.title}</b>
               <span>
                 {Math.floor(elapsed / 60)}分{elapsed % 60}秒
               </span>
             </div>
-            <p>{activity.description}</p>
+            <p>
+              {quickProgress
+                ? "候选检索、证据判断与结果保存分批执行，已入库数量随实际保存更新。"
+                : activity.description}
+            </p>
             <div className="activity-current-step">
               <span>当前动作</span>
               <b>{phase}</b>
@@ -440,24 +439,39 @@ export function Chat({
                   {String(catalogProgress.payload.path)}
                 </p>
               )}
-            {progress && (
+            {quickProgress ? (
               <div className="activity-counts">
-                <span className="activity-counter">
-                  原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b> /{" "}
-                  {Number(progress.payload.totalLines ?? 0)} 行
-                </span>
-                <span className="activity-counter">
-                  条款 <b>{Number(progress.payload.requirements)}</b> · 已确认{" "}
-                  <b>{Number(progress.payload.confirmed)}</b>
-                </span>
-                <span className="activity-counter">
-                  评估 <b>{Number(progress.payload.assessments)}</b> · 已复核{" "}
-                  <b>{Number(progress.payload.reviewed)}</b>
-                </span>
-                <span className="activity-counter">
-                  执行 <b>{Number(progress.payload.turns)}</b> 轮
-                </span>
+                {[
+                  ["已检索", quickProgress.payload.retrieved],
+                  ["已判断", quickProgress.payload.judged],
+                  ["已保存", quickProgress.payload.saved],
+                  ["失败", quickProgress.payload.failed],
+                ].map(([label, count]) => (
+                  <span key={String(label)}>
+                    {String(label)} <b>{Number(count ?? 0)}</b>
+                  </span>
+                ))}
               </div>
+            ) : (
+              progress && (
+                <div className="activity-counts">
+                  <span className="activity-counter">
+                    原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b> /{" "}
+                    {Number(progress.payload.totalLines ?? 0)} 行
+                  </span>
+                  <span className="activity-counter">
+                    条款 <b>{Number(progress.payload.requirements)}</b> · 已确认{" "}
+                    <b>{Number(progress.payload.confirmed)}</b>
+                  </span>
+                  <span className="activity-counter">
+                    评估 <b>{Number(progress.payload.assessments)}</b> · 已复核{" "}
+                    <b>{Number(progress.payload.reviewed)}</b>
+                  </span>
+                  <span className="activity-counter">
+                    执行 <b>{Number(progress.payload.turns)}</b> 轮
+                  </span>
+                </div>
+              )
             )}
             {progress && (
               <small>
@@ -486,6 +500,7 @@ export function Chat({
                   onClick={() =>
                     void submit(
                       "请从已保存的项目结果和当前计划继续执行上一项任务。先读取项目状态，保留人工确认结果，避免重复创建条款。",
+                      latestRun.evaluation_mode ?? "agent",
                     )
                   }
                 >
@@ -511,7 +526,7 @@ export function Chat({
           onChange={(e) => setDraft(e.target.value)}
           autoSize={{ minRows: 2, maxRows: 7 }}
           maxLength={20000}
-          placeholder="提出目标、追问证据，或补充产品与版本约束…"
+          placeholder="输入消息…"
           onKeyDown={(e) => {
             if (
               e.key === "Enter" &&
@@ -531,9 +546,44 @@ export function Chat({
                 type="text"
                 icon={<PaperClipOutlined />}
                 onClick={onUpload}
+                data-guide="upload"
                 aria-label="上传招标文件"
                 disabled={archived}
               />
+            </Tooltip>
+            <Tooltip
+              title={
+                hasDocuments
+                  ? "阅读已解析文件，抽取条款并开始评估"
+                  : "请先上传并解析招标文件"
+              }
+            >
+              <Dropdown.Button
+                data-guide={scopeConfirmed ? "continue" : "start"}
+                type="primary"
+                size="small"
+                disabled={!hasDocuments || !!activeRun || sending || archived}
+                loading={sending}
+                menu={{
+                  selectable: true,
+                  selectedKeys: [startMode],
+                  items: [
+                    { key: "quick", label: "快速初评 · 批量匹配原清单" },
+                    { key: "agent", label: "Agent 深度评估 · 自主规划" },
+                  ],
+                  onClick: ({ key }) => setStartMode(key as EvaluationMode),
+                }}
+                onClick={() =>
+                  void submit(
+                    scopeConfirmed
+                      ? "产品范围已确认，请读取项目状态，按已选产品版本继续匹配和评估。"
+                      : assessmentStartPrompt(startMode),
+                    startMode,
+                  )
+                }
+              >
+                {startMode === "quick" ? "开始快速初评" : "开始深度评估"}
+              </Dropdown.Button>
             </Tooltip>
             <span>Enter 发送 · Shift + Enter 换行</span>
           </div>
