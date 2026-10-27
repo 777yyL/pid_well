@@ -693,7 +693,7 @@ export class AgentRunner {
             run.project_id,
             run.id,
             control.signal,
-            async (packets) => {
+            async (packets, feedback, requestSignal) => {
               if (++turns > config.MAX_TOTAL_AGENT_TURNS)
                 throw new AppError(422, "达到执行预算，已保存批次可继续");
               await this.db.query("UPDATE runs SET turn_count=$1 WHERE id=$2", [
@@ -707,7 +707,16 @@ export class AgentRunner {
                   messages: [
                     {
                       role: "user",
-                      content: JSON.stringify(packets),
+                      content: JSON.stringify({
+                        requirements: packets,
+                        ...(feedback
+                          ? {
+                              validationFeedback: feedback,
+                              instruction:
+                                "上次请求或校验失败，请根据错误修正本批 JSON；不得编造证据。",
+                            }
+                          : {}),
+                      }),
                       timestamp: Date.now(),
                     },
                   ],
@@ -716,6 +725,7 @@ export class AgentRunner {
                   maxTokens: settings.maxOutputTokens,
                   signal: AbortSignal.any([
                     control.signal,
+                    ...(requestSignal ? [requestSignal] : []),
                     AbortSignal.timeout(config.MODEL_REQUEST_TIMEOUT_MS),
                   ]),
                 },
@@ -731,7 +741,8 @@ export class AgentRunner {
                 .join("");
             },
             async (payload) => {
-              setPhase(String(payload.message ?? "批量初评"));
+              const nextPhase = String(payload.message ?? "批量初评");
+              if (phase !== nextPhase) setPhase(nextPhase);
               await emit("quick_progress", payload);
             },
             Math.max(

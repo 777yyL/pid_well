@@ -1,3 +1,4 @@
+import { runEvidencePipeline } from "./assessment-pipeline.js";
 import { z } from "zod";
 import {
   type RequirementInput,
@@ -8,7 +9,11 @@ import {
 import { aggregateVerdict } from "../shared/accuracy.js";
 import type { Database } from "./db.js";
 import { productScope } from "./product-scope.js";
-import { searchSelected, searchGlobalFallback } from "./product-search.js";
+import {
+  searchSelected,
+  searchGlobalFallback,
+  prepareSelectedSearch,
+} from "./product-search.js";
 import { checkOriginal, saveAssessments } from "./assessment.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
@@ -202,7 +207,11 @@ export async function runQuickAssessment(
   projectId: string,
   runId: string,
   signal: AbortSignal,
-  judge: (packets: QuickPacket[]) => Promise<string>,
+  judge: (
+    packets: QuickPacket[],
+    feedback?: string,
+    requestSignal?: AbortSignal,
+  ) => Promise<string>,
   emit: (payload: Record<string, unknown>) => Promise<void>,
   budget = 60000,
 ) {
@@ -292,213 +301,327 @@ export async function runQuickAssessment(
   };
   const cache = new Map<string, Promise<Record<string, unknown>>>();
   const started = Date.now();
-  const progress = async (stage: string, message: string) =>
-    emit({ ...counters, stage, message, elapsedMs: Date.now() - started });
-  const packets: QuickPacket[] = [];
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(2, pending.length) }, async () => {
-      while (cursor < pending.length) {
-        const row = pending[cursor++];
-        signal.throwIfAborted();
-        try {
-          const packet: QuickPacket = {
-            requirement: row.data,
-            candidates: [],
-            searches: [],
-          };
-          for (const child of row.data.subrequirements!) {
-            const response = await searchSelected(
-              db,
-              projectId,
-              runId,
-              row.data.id,
-              child.raw.slice(0, 1000),
-              3,
-              signal,
-              child.id,
-              cache,
-            );
-            packet.searches.push({
-              subrequirementId: child.id,
-              query: child.raw.slice(0, 1000),
-              traceId: response.traceId,
-            });
-            for (const hit of response.results) {
-              for (const owner of hit.products) {
-                if (
-                  !packet.candidates.some(
-                    (c) => c.path === hit.path && c.product === owner.name,
-                  )
-                )
-                  packet.candidates.push({
-                    path: hit.path,
-                    snapshotId: hit.snapshotId,
-                    sales: hit.sales,
-                    moduleId: hit.moduleId ?? "",
-                    product: owner.name,
-                    version: owner.version,
-                    excerpts: hit.excerpts,
-                    saleItemId:
-                      "saleItemId" in hit ? hit.saleItemId : undefined,
-                    knowledgeReleaseId:
-                      "knowledgeReleaseId" in hit
-                        ? hit.knowledgeReleaseId
-                        : undefined,
-                  });
-              }
-            }
-          }
-          packets.push(packet);
-          counters.retrieved++;
-          await progress(
-            "retrieving",
-            `已准备 ${counters.retrieved} 条需求的候选证据`,
-          );
-        } catch (error) {
-          signal.throwIfAborted();
-          counters.failed++;
-          await progress(
-            "failed",
-            `${row.data.id} 检索失败：${error instanceof Error ? error.message : "未知错误"}`,
-          );
-        }
-      }
-    }),
-  );
-  for (const batch of planQuickBatches(packets, budget)) {
-    signal.throwIfAborted();
-    let done = false;
-    for (let attempt = 0; attempt < 2 && !done; attempt++) {
+  const failures: {
+    requirementIds: string[];
+    stage: string;
+    message: string;
+    attempt: number;
+    retryable: boolean;
+    at: string;
+  }[] = [];
+  const judged = new Set<string>();
+  const activeRetrievals = new Map<string, number>();
+  let batchStage = "",
+    batchMessage = "";
+  let displayMessage = "",
+    stageStartedAt = started;
+  const progress = async (stage: string, message: string) => {
+    const display = batchMessage || message;
+    if (displayMessage !== display) {
+      displayMessage = display;
+      stageStartedAt = Date.now();
+    }
+    await emit({
+      ...counters,
+      stage: batchStage || stage,
+      message: display,
+      stageStartedAt,
+      failures: [...failures],
+      activeRetrievals: [...activeRetrievals].map(([id, at]) => ({
+        requirementId: id,
+        startedAt: at,
+      })),
+      elapsedMs: Date.now() - started,
+    });
+  };
+  const invokeJudge = async (
+    batch: QuickPacket[],
+    feedback: string | undefined,
+    requestSignal: AbortSignal,
+  ) => {
+    const at = Date.now();
+    let ok = false,
+      errorMessage = "";
+    try {
+      const result = await judge(batch, feedback, requestSignal);
+      ok = true;
+      return result;
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+      throw error;
+    } finally {
+      await audit(db, projectId, null, runId, "quick_model_request", {
+        requirementIds: batch.map((p) => p.requirement.id),
+        inputChars: JSON.stringify(batch).length,
+        elapsedMs: Date.now() - at,
+        ok,
+        error: errorMessage.slice(0, 2000),
+        retry: !!feedback,
+      });
+    }
+  };
+  const failure = async (
+    ids: string[],
+    stage: string,
+    error: unknown,
+    attempt = 1,
+    retryable = false,
+  ) => {
+    const detail = {
+      requirementIds: ids,
+      stage,
+      message: (error instanceof Error ? error.message : String(error)).slice(
+        0,
+        2000,
+      ),
+      attempt,
+      retryable,
+      at: new Date().toISOString(),
+    };
+    failures.push(detail);
+    await progress(
+      "failed",
+      `${ids.join("、")} ${stage}失败：${detail.message}`,
+    );
+    return detail.message;
+  };
+  await progress("retrieving", "正在准备本次任务的产品目录与版本范围");
+  const prepared = pending.length
+    ? await prepareSelectedSearch(db, projectId, runId, signal)
+    : undefined;
+  await runEvidencePipeline(
+    pending,
+    signal,
+    async (row, pipelineSignal) => {
+      activeRetrievals.set(row.data.id, Date.now());
+      await progress("retrieving", `正在检索 ${row.data.id} 的候选销售项`);
       try {
-        await progress(
-          "judging",
-          `正在判断 ${batch.map((p) => p.requirement.id).join("、")}${attempt ? "（重试）" : ""}`,
-        );
-        let result = parseQuickJudgments(
-          await judge(batch),
-          batch.map((p) => p.requirement.id),
-        );
-        if (attempt === 0) {
-          let supplemented = false;
-          for (const value of result) {
-            const packet = batch.find(
-              (p) => p.requirement.id === value.requirementId,
-            )!;
-            for (const check of value.checks.filter(
-              (c) => c.level === "unknown" || c.level === "no_match",
-            )) {
-              const child = packet.requirement.subrequirements!.find(
-                (c) => c.id === check.subrequirementId,
-              );
-              if (!child) throw new Error("未知子条款");
-              const query = `${child.raw.slice(0, 900)} 技术规格`;
-              const response = await searchSelected(
-                db,
-                projectId,
-                runId,
-                value.requirementId,
-                query,
-                5,
-                signal,
-                child.id,
-                cache,
-              );
-              packet.searches.push({
-                subrequirementId: child.id,
-                query,
-                traceId: response.traceId,
-              });
-              for (const hit of response.results)
-                for (const owner of hit.products) {
-                  if (
-                    !packet.candidates.some(
-                      (c) => c.path === hit.path && c.product === owner.name,
-                    )
-                  )
-                    packet.candidates.push({
-                      path: hit.path,
-                      snapshotId: hit.snapshotId,
-                      sales: hit.sales,
-                      moduleId: hit.moduleId ?? "",
-                      product: owner.name,
-                      version: owner.version,
-                      excerpts: hit.excerpts,
-                      saleItemId:
-                        "saleItemId" in hit ? hit.saleItemId : undefined,
-                      knowledgeReleaseId:
-                        "knowledgeReleaseId" in hit
-                          ? hit.knowledgeReleaseId
-                          : undefined,
-                    });
-                }
-              supplemented = true;
-            }
-            if (
-              value.checks.some(
-                (c) => c.level === "unknown" || c.level === "no_match",
+        const packet: QuickPacket = {
+          requirement: row.data,
+          candidates: [],
+          searches: [],
+        };
+        for (const child of row.data.subrequirements!) {
+          const response = await searchSelected(
+            db,
+            projectId,
+            runId,
+            row.data.id,
+            child.raw.slice(0, 1000),
+            3,
+            pipelineSignal,
+            child.id,
+            cache,
+            prepared,
+          );
+          packet.searches.push({
+            subrequirementId: child.id,
+            query: child.raw.slice(0, 1000),
+            traceId: response.traceId,
+          });
+          for (const hit of response.results) {
+            for (const owner of hit.products) {
+              if (
+                !packet.candidates.some(
+                  (c) => c.path === hit.path && c.product === owner.name,
+                )
               )
-            ) {
-              await progress(
-                "retrieving",
-                `${value.requirementId} 范围内证据不足，进行一次全局补查`,
-              );
-              const alternative = await searchGlobalFallback(
-                db,
-                projectId,
-                runId,
-                {
-                  requirementId: value.requirementId,
-                  query: packet.requirement.raw.slice(0, 900),
-                  topK: 3,
-                  reason: "insufficient_evidence",
-                  explanation:
-                    "快速初评在已选产品范围内证据不足，补查其他产品，仅供后续选型参考，不纳入本次正式匹配",
-                },
-                signal,
-              );
-              packet.alternativeNote = `全局补查完成，范围外候选仅供另行选型，不能作为当前条款的满足证据。${JSON.stringify(alternative).slice(0, 2500)}`;
+                packet.candidates.push({
+                  path: hit.path,
+                  snapshotId: hit.snapshotId,
+                  sales: hit.sales,
+                  moduleId: hit.moduleId ?? "",
+                  product: owner.name,
+                  version: owner.version,
+                  excerpts: hit.excerpts,
+                  saleItemId: "saleItemId" in hit ? hit.saleItemId : undefined,
+                  knowledgeReleaseId:
+                    "knowledgeReleaseId" in hit
+                      ? hit.knowledgeReleaseId
+                      : undefined,
+                });
             }
           }
-          if (supplemented) {
-            if (JSON.stringify(batch).length > budget)
-              throw new Error("补查证据超过批次预算，请使用深度评估");
-            result = parseQuickJudgments(
-              await judge(batch),
+        }
+        counters.retrieved++;
+        await progress(
+          "retrieving",
+          `已准备 ${counters.retrieved} 条需求的候选证据`,
+        );
+        return packet;
+      } catch (error) {
+        pipelineSignal.throwIfAborted();
+        counters.failed++;
+        await failure([row.data.id], "检索", error);
+        return null;
+      } finally {
+        activeRetrievals.delete(row.data.id);
+      }
+    },
+    async (packets, pipelineSignal) => {
+      for (const batch of planQuickBatches(packets, budget)) {
+        pipelineSignal.throwIfAborted();
+        let done = false;
+        let feedback = "";
+        let currentStage = "模型判断";
+        for (let attempt = 0; attempt < 2 && !done; attempt++) {
+          try {
+            currentStage = "模型判断";
+            batchStage = "judging";
+            batchMessage = `正在判断 ${batch.map((p) => p.requirement.id).join("、")}${attempt ? "（重试）" : ""}`;
+            await progress(
+              "judging",
+              `正在判断 ${batch.map((p) => p.requirement.id).join("、")}${attempt ? "（重试）" : ""}`,
+            );
+            let result = parseQuickJudgments(
+              await invokeJudge(batch, feedback, pipelineSignal),
               batch.map((p) => p.requirement.id),
             );
+            for (const value of result) judged.add(value.requirementId);
+            counters.judged = judged.size;
+            await progress("judging", batchMessage);
+            if (attempt === 0) {
+              currentStage = "证据补查";
+              let supplemented = false;
+              for (const value of result) {
+                const packet = batch.find(
+                  (p) => p.requirement.id === value.requirementId,
+                )!;
+                for (const check of value.checks.filter(
+                  (c) => c.level === "unknown" || c.level === "no_match",
+                )) {
+                  const child = packet.requirement.subrequirements!.find(
+                    (c) => c.id === check.subrequirementId,
+                  );
+                  if (!child) throw new Error("未知子条款");
+                  batchStage = "retrieving";
+                  batchMessage = `正在补查 ${value.requirementId} / ${child.id}`;
+                  await progress("retrieving", batchMessage);
+                  const query = `${child.raw.slice(0, 900)} 技术规格`;
+                  const response = await searchSelected(
+                    db,
+                    projectId,
+                    runId,
+                    value.requirementId,
+                    query,
+                    5,
+                    pipelineSignal,
+                    child.id,
+                    cache,
+                    prepared,
+                  );
+                  packet.searches.push({
+                    subrequirementId: child.id,
+                    query,
+                    traceId: response.traceId,
+                  });
+                  for (const hit of response.results)
+                    for (const owner of hit.products) {
+                      if (
+                        !packet.candidates.some(
+                          (c) =>
+                            c.path === hit.path && c.product === owner.name,
+                        )
+                      )
+                        packet.candidates.push({
+                          path: hit.path,
+                          snapshotId: hit.snapshotId,
+                          sales: hit.sales,
+                          moduleId: hit.moduleId ?? "",
+                          product: owner.name,
+                          version: owner.version,
+                          excerpts: hit.excerpts,
+                          saleItemId:
+                            "saleItemId" in hit ? hit.saleItemId : undefined,
+                          knowledgeReleaseId:
+                            "knowledgeReleaseId" in hit
+                              ? hit.knowledgeReleaseId
+                              : undefined,
+                        });
+                    }
+                  supplemented = true;
+                }
+                if (
+                  value.checks.some(
+                    (c) => c.level === "unknown" || c.level === "no_match",
+                  )
+                ) {
+                  batchStage = "retrieving";
+                  batchMessage = `${value.requirementId} 范围内证据不足，正在补查`;
+                  await progress(
+                    "retrieving",
+                    `${value.requirementId} 范围内证据不足，进行一次全局补查`,
+                  );
+                  const alternative = await searchGlobalFallback(
+                    db,
+                    projectId,
+                    runId,
+                    {
+                      requirementId: value.requirementId,
+                      query: packet.requirement.raw.slice(0, 900),
+                      topK: 3,
+                      reason: "insufficient_evidence",
+                      explanation:
+                        "快速初评在已选产品范围内证据不足，补查其他产品，仅供后续选型参考，不纳入本次正式匹配",
+                    },
+                    pipelineSignal,
+                  );
+                  packet.alternativeNote = `全局补查完成，范围外候选仅供另行选型，不能作为当前条款的满足证据。${JSON.stringify(alternative).slice(0, 2500)}`;
+                }
+              }
+              if (supplemented) {
+                if (JSON.stringify(batch).length > budget)
+                  throw new Error("补查证据超过批次预算，请使用深度评估");
+                currentStage = "补查后判断";
+                batchStage = "judging";
+                batchMessage = `正在重新判断 ${batch.map((p) => p.requirement.id).join("、")}`;
+                await progress("judging", batchMessage);
+                result = parseQuickJudgments(
+                  await invokeJudge(batch, undefined, pipelineSignal),
+                  batch.map((p) => p.requirement.id),
+                );
+              }
+            }
+            pipelineSignal.throwIfAborted();
+            const live = await productScope(db, projectId);
+            if (live.revision !== scope.revision)
+              throw new Error("产品范围已变化，请重新开始初评");
+            const items = result.map((v) => ({
+              ...buildQuickAssessment(
+                batch.find((p) => p.requirement.id === v.requirementId)!,
+                v,
+                scope.selected[0],
+              ),
+              productScopeRevision: scope.revision,
+            }));
+            currentStage = "保存校验";
+            batchStage = "saving";
+            batchMessage = `正在校验并保存 ${batch.map((p) => p.requirement.id).join("、")}`;
+            await progress("saving", batchMessage);
+            await saveAssessments(db, projectId, items, { runId });
+
+            counters.saved += batch.length;
+            done = true;
+            batchStage = "";
+            batchMessage = "";
+            await progress("saving", `本批 ${batch.length} 条已保存`);
+          } catch (error) {
+            pipelineSignal.throwIfAborted();
+            feedback = await failure(
+              batch.map((p) => p.requirement.id),
+              currentStage,
+              error,
+              attempt + 1,
+              attempt === 0,
+            );
+            if (attempt === 1) counters.failed += batch.length;
           }
         }
-        signal.throwIfAborted();
-        const live = await productScope(db, projectId);
-        if (live.revision !== scope.revision)
-          throw new Error("产品范围已变化，请重新开始初评");
-        const items = result.map((v) => ({
-          ...buildQuickAssessment(
-            batch.find((p) => p.requirement.id === v.requirementId)!,
-            v,
-            scope.selected[0],
-          ),
-          productScopeRevision: scope.revision,
-        }));
-        await progress("saving", "正在校验证据并保存本批结果");
-        await saveAssessments(db, projectId, items, { runId });
-        counters.judged += batch.length;
-        counters.saved += batch.length;
-        done = true;
-        await progress("saving", `本批 ${batch.length} 条已保存`);
-      } catch (error) {
-        signal.throwIfAborted();
-        if (attempt === 1) {
-          counters.failed += batch.length;
-          await progress(
-            "failed",
-            `本批未保存：${error instanceof Error ? error.message : "未知错误"}`,
-          );
-        }
+        batchStage = "";
+        batchMessage = "";
       }
-    }
-  }
+    },
+  );
   await progress(
     counters.failed ? "failed" : "completed",
     counters.failed

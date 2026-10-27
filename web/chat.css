@@ -281,6 +281,28 @@
   font-size: 11px;
   padding: 8px 12px 10px;
 }
+.chat-pane .quick-failures {
+  margin: 12px 0;
+  border: 1px solid #e6cf9f;
+  border-radius: 8px;
+  background: #fffaf0;
+  padding: 10px 14px;
+  color: #78551c;
+  font-size: 12px;
+}
+.chat-pane .quick-failures summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.chat-pane .quick-failures > div {
+  border-top: 1px solid #eadfc9;
+  padding: 10px 0;
+  overflow-wrap: anywhere;
+}
+.chat-pane .quick-failures p {
+  white-space: pre-wrap;
+  margin: 6px 0;
+}
 @media (max-width: 700px) {
   .chat-pane .chat-scroll {
     padding: 14px 16px;

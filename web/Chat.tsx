@@ -153,6 +153,16 @@ export function Chat({
   const quickProgress = sameConversation
     ? events.filter((e) => e.type === "quick_progress").at(-1)
     : undefined;
+  const quickFailures = Array.isArray(quickProgress?.payload.failures)
+    ? (quickProgress.payload.failures as {
+        requirementIds: string[];
+        stage: string;
+        message: string;
+        attempt: number;
+        retryable: boolean;
+        at: string;
+      }[])
+    : [];
   const heartbeatAge = progress
     ? Math.max(
         0,
@@ -167,17 +177,23 @@ export function Chat({
     : 0;
   const currentTool = tools.findLast((t) => !t.finish);
   const phase = quickProgress
-    ? (quickStageLabels[String(quickProgress.payload.stage)] ??
-      "正在执行快速初评")
+    ? String(quickProgress.payload.message ?? "") ||
+      quickStageLabels[String(quickProgress.payload.stage)] ||
+      "正在执行快速初评"
     : currentTool
       ? (names[String(currentTool.event.payload.toolName)] ?? "执行工具")
       : String(progress?.payload.phase ?? "正在准备模型请求").replace(
           /执行工具：(\w+)/,
           (_, name: string) => names[name] ?? name,
         );
-  const phaseTimestamp = currentTool
-    ? new Date(currentTool.event.created_at).getTime()
-    : Number(progress?.payload.phaseSince ?? now);
+  const phaseTimestamp = quickProgress
+    ? Number(
+        quickProgress.payload.stageStartedAt ??
+          new Date(quickProgress.created_at).getTime(),
+      )
+    : currentTool
+      ? new Date(currentTool.event.created_at).getTime()
+      : Number(progress?.payload.phaseSince ?? now);
   const phaseSeconds = Number.isFinite(phaseTimestamp)
     ? Math.max(0, Math.floor((now - phaseTimestamp) / 1000))
     : 0;
@@ -365,6 +381,30 @@ export function Chat({
             此项目的另一个会话正在执行。请在左侧切换到该会话查看实时进度；本项目同时只能执行一个任务。
           </div>
         )}
+        {quickFailures.length > 0 && (
+          <details className="quick-failures">
+            <summary>
+              错误与重试记录（{quickFailures.length}） ·{" "}
+              {quickFailures.at(-1)?.requirementIds.join("、")}：
+              {quickFailures.at(-1)?.message.slice(0, 100)}
+            </summary>
+            {quickFailures.map((failure, index) => (
+              <div key={index}>
+                <b>
+                  {failure.requirementIds.join("、")} · {failure.stage} · 第{" "}
+                  {failure.attempt} 次
+                </b>
+                <p>{failure.message}</p>
+                <small>
+                  {failure.retryable
+                    ? "已安排一次重试，是否成功以保存结果为准"
+                    : "该次操作未完成，其他条款继续处理"}{" "}
+                  · {new Date(failure.at).toLocaleTimeString("zh-CN")}
+                </small>
+              </div>
+            ))}
+          </details>
+        )}
         {quickProgress && !activeRun && (
           <Alert
             className="quick-result"
@@ -431,6 +471,23 @@ export function Chat({
               <span>当前动作</span>
               <b>{phase}</b>
             </div>
+            {Array.isArray(quickProgress?.payload.activeRetrievals) &&
+              quickProgress.payload.activeRetrievals.length > 0 && (
+                <small>
+                  并行检索：
+                  {(
+                    quickProgress.payload.activeRetrievals as {
+                      requirementId: string;
+                      startedAt: number;
+                    }[]
+                  )
+                    .map(
+                      (r) =>
+                        `${r.requirementId}（${Math.max(0, Math.floor((now - r.startedAt) / 1000))}秒）`,
+                    )
+                    .join("、")}
+                </small>
+              )}
             {currentTool?.event.payload.toolName === "wiki_product_catalog" &&
               catalogProgress && (
                 <p className="muted">
@@ -443,7 +500,7 @@ export function Chat({
               <div className="activity-counts">
                 {[
                   ["已检索", quickProgress.payload.retrieved],
-                  ["已判断", quickProgress.payload.judged],
+                  ["模型已判断", quickProgress.payload.judged],
                   ["已保存", quickProgress.payload.saved],
                   ["失败", quickProgress.payload.failed],
                 ].map(([label, count]) => (

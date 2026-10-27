@@ -13,6 +13,7 @@ import {
 } from "../server/structured-knowledge.js";
 import {
   searchSelected,
+  prepareSelectedSearch,
   validateCatalogSale,
   searchGlobalFallback,
   recordAlternative,
@@ -142,6 +143,78 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       strategy: "",
     });
     let modelCalls = 0;
+    const prepared = await prepareSelectedSearch(db, pid, rid);
+    let rebuilt = 0;
+    const instrumented = {
+      ...db,
+      query: async <T>(sql: string, args?: unknown[]) => {
+        if (sql.includes("INSERT INTO snapshots")) rebuilt++;
+        return db.query<T>(sql, args);
+      },
+    };
+    await searchSelected(
+      instrumented,
+      pid,
+      rid,
+      "T-1",
+      "实时预览",
+      3,
+      undefined,
+      "T-1.1",
+      undefined,
+      prepared,
+    );
+    await searchSelected(
+      instrumented,
+      pid,
+      rid,
+      "T-2",
+      "实时预览",
+      3,
+      undefined,
+      "T-2.1",
+      undefined,
+      prepared,
+    );
+    assert.equal(rebuilt, 2, "两次检索只写销售项快照，不再重建产品目录快照");
+    await assert.rejects(
+      searchSelected(
+        db,
+        pid,
+        randomUUID(),
+        "T-1",
+        "实时预览",
+        3,
+        undefined,
+        "T-1.1",
+        undefined,
+        prepared,
+      ),
+      /不属于当前任务/,
+    );
+    await db.query(
+      "UPDATE product_scopes SET revision=revision+1 WHERE project_id=$1",
+      [pid],
+    );
+    await assert.rejects(
+      searchSelected(
+        db,
+        pid,
+        rid,
+        "T-1",
+        "实时预览",
+        3,
+        undefined,
+        "T-1.1",
+        undefined,
+        prepared,
+      ),
+      /范围已变化/,
+    );
+    await db.query(
+      "UPDATE product_scopes SET revision=$1 WHERE project_id=$2",
+      [prepared.catalog.scopeRevision, pid],
+    );
     const progress: Record<string, unknown>[] = [];
     const judge = async (
       packets: import("../server/quick-assessment.js").QuickPacket[],
@@ -218,6 +291,43 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       "resume must not call model for already saved current-scope rows",
     );
     assert.equal(progress.at(-1)?.saved, 2);
+    assert.ok(
+      progress.some((p) => p.judged === 2 && p.saved === 0),
+      "模型完成计数必须先于保存完成",
+    );
+    await db.query(
+      "DELETE FROM assessments WHERE project_id=$1 AND requirement_id='T-2'",
+      [pid],
+    );
+    const feedbacks: (string | undefined)[] = [];
+    const repairProgress: Record<string, unknown>[] = [];
+    await runQuickAssessment(
+      db,
+      pid,
+      rid,
+      new AbortController().signal,
+      async (packets, feedback) => {
+        feedbacks.push(feedback);
+        const value = JSON.parse(await judge(packets));
+        if (feedbacks.length === 1)
+          value.assessments[0].checks[0].evidence[0].quote = "伪造的原文";
+        return JSON.stringify(value);
+      },
+      async (p) => {
+        repairProgress.push(p);
+      },
+    );
+    assert.equal(feedbacks.length, 2);
+    assert.ok(feedbacks[1], "保存校验错误应反馈给第二次模型调用");
+    assert.equal(repairProgress.at(-1)?.judged, 1, "重试不重复累计已判断条款");
+    const errors = repairProgress.at(-1)?.failures as {
+      stage: string;
+      message: string;
+    }[];
+    assert.ok(
+      errors.some((e) => e.stage === "保存校验" && e.message),
+      "重试成功后仍保留失败详情",
+    );
     await db.query(
       "UPDATE assessments SET source='human',reviewed=true WHERE project_id=$1 AND requirement_id='T-1'",
       [pid],
@@ -255,7 +365,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       judge,
       async () => {},
     );
-    assert.equal(modelCalls, 2, "only unsaved clause rejudged");
+    assert.equal(modelCalls, 4, "only unsaved clause rejudged");
     assert.equal(
       (await assessmentRows(db, pid)).find((r) => r.requirementId === "T-1")
         ?.source,
@@ -270,7 +380,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
     await assert.rejects(
       runQuickAssessment(db, pid, rid, cancelled.signal, judge, async () => {}),
     );
-    assert.equal(modelCalls, 2, "cancel must not call model");
+    assert.equal(modelCalls, 4, "cancel must not call model");
     await db.query("DELETE FROM assessments WHERE project_id=$1", [pid]);
     const result = await searchSelected(
       db,

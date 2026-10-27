@@ -341,6 +341,28 @@ export async function readCatalogPage(
       : undefined,
   };
 }
+export interface SelectedSearchContext {
+  projectId: string;
+  runId: string;
+  catalog: Catalog;
+  release: Awaited<ReturnType<typeof projectKnowledge>>;
+  paths: string[];
+}
+export async function prepareSelectedSearch(
+  db: Database,
+  projectId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<SelectedSearchContext> {
+  const catalog = await selectedCatalog(db, projectId, runId, signal);
+  return {
+    projectId,
+    runId,
+    catalog,
+    release: await projectKnowledge(db, projectId),
+    paths: [...new Set(catalog.products.flatMap((p) => p.paths))],
+  };
+}
 export async function searchSelected(
   db: Database,
   projectId: string,
@@ -351,6 +373,7 @@ export async function searchSelected(
   signal?: AbortSignal,
   subrequirementId?: string,
   recallCache = new Map<string, Promise<Record<string, unknown>>>(),
+  prepared?: SelectedSearchContext,
 ) {
   const started = Date.now();
   await requireClause(db, projectId, requirementId);
@@ -364,9 +387,22 @@ export async function searchSelected(
     if (!r?.data.subrequirements?.some((s) => s.id === subrequirementId))
       throw new AppError(422, "检索子要求不属于该父条款");
   }
-  const catalog = await selectedCatalog(db, projectId, runId, signal);
-  const paths = [...new Set(catalog.products.flatMap((p) => p.paths))];
-  const release = await projectKnowledge(db, projectId);
+  if (prepared) {
+    if (prepared.projectId !== projectId || prepared.runId !== runId)
+      throw new AppError(409, "检索上下文不属于当前任务");
+    const [live] = await db.query<{ revision: number; status: string }>(
+      "SELECT revision,status FROM product_scopes WHERE project_id=$1",
+      [projectId],
+    );
+    if (
+      !live ||
+      live.status !== "confirmed" ||
+      live.revision !== prepared.catalog.scopeRevision
+    )
+      throw new AppError(409, "产品范围已变化，请重新开始初评");
+  }
+  const { catalog, paths, release } =
+    prepared ?? (await prepareSelectedSearch(db, projectId, runId, signal));
   if (release)
     return searchStructured(
       db,
@@ -520,31 +556,32 @@ async function searchStructured(
   const started = Date.now(),
     tokens = retrievalTokens(query);
   const allowed = new Set(catalog.products.flatMap((p) => p.paths));
-  let ranked = release.data.saleItems
-    .flatMap((s) => {
-      const path = knowledgePath(release.id, "sale-items", s.sale_item_id);
-      if (!allowed.has(path)) return [];
-      const text = [
-        s.name,
-        s.module_code,
-        s.description,
-        s.specification_md,
-        s.prerequisites,
-        s.limitations,
-      ]
-        .join(" ")
-        .toLowerCase();
-      const score = tokens.reduce(
-        (n, t) =>
-          n +
-          (text.includes(t)
-            ? t.length * (s.name.toLowerCase().includes(t) ? 4 : 1)
-            : 0),
-        0,
-      );
-      return score ? [{ sale: s, path, score }] : [];
-    })
-    .sort((a, b) => b.score - a.score);
+  const keywordRank = () =>
+    release.data.saleItems
+      .flatMap((s) => {
+        const path = knowledgePath(release.id, "sale-items", s.sale_item_id);
+        if (!allowed.has(path)) return [];
+        const text = [
+          s.name,
+          s.module_code,
+          s.description,
+          s.specification_md,
+          s.prerequisites,
+          s.limitations,
+        ]
+          .join(" ")
+          .toLowerCase();
+        const score = tokens.reduce(
+          (n, t) =>
+            n +
+            (text.includes(t)
+              ? t.length * (s.name.toLowerCase().includes(t) ? 4 : 1)
+              : 0),
+          0,
+        );
+        return score ? [{ sale: s, path, score }] : [];
+      })
+      .sort((a, b) => b.score - a.score);
   const scopedSales = release.data.saleItems.filter((sale) =>
     allowed.has(knowledgePath(release.id, "sale-items", sale.sale_item_id)),
   );
@@ -555,6 +592,7 @@ async function searchStructured(
     sources.set(paths[0], [...(sources.get(paths[0]) ?? []), sale]);
   }
   let mode = "structured_keyword";
+  let ranked: ReturnType<typeof keywordRank> = [];
   let retrievalNote = "没有可用 source_path，使用固定发布数据关键词召回。";
   if (sources.size) {
     const { wiki, wikiId } = await boundWiki(db, projectId, signal);
@@ -589,7 +627,7 @@ async function searchStructured(
     });
     mode = "structured_wiki_scoped";
     retrievalNote = `Wiki 范围召回；证据仅使用固定发布数据。${scopedSales.length - [...sources.values()].flat().length} 项缺少可用 source_path；共享来源的销售项分别保留发布版本身份。`;
-  }
+  } else ranked = keywordRank();
   const results = [];
   for (const hit of ranked.slice(0, topK)) {
     const page = await snapshotPage(
