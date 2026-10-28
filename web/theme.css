@@ -1501,6 +1501,9 @@
   margin:4px 0 18px;
 }
 .product-selection .selection-confirm-bar {
+  position:sticky;
+  bottom:0;
+  z-index:10;
   display:flex;
   justify-content:space-between;
   align-items:center;
@@ -1508,7 +1511,9 @@
   gap:12px;
   border-top:1px solid var(--border);
   margin-top:24px;
-  padding:16px 0 4px;
+  padding:16px;
+  background:var(--surface, #fff);
+  box-shadow:0 -6px 20px rgb(28 48 73 / 7%);
 }
 .product-selection .selection-confirm-bar p {margin:5px 0 0;font-size:12px;}
 .product-selection .product-selection-tabs>.ant-tabs-nav {margin-bottom:20px;}

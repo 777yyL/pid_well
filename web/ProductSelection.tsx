@@ -711,7 +711,7 @@ export function ProductSelection({
         />
         <div className="selection-confirm-bar">
           <div>
-            <b>
+            <b aria-live="polite" aria-atomic="true">
               已选{" "}
               {selectedProducts.length +
                 customProducts.filter((p) => p.name?.trim()).length}{" "}
@@ -724,6 +724,7 @@ export function ProductSelection({
           <Space wrap>
             <Button
               type="primary"
+              size="large"
               loading={busy}
               disabled={locked || active}
               data-guide="confirm-products"
