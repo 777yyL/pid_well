@@ -9,6 +9,7 @@ import {
   Input,
   Space,
   Tag,
+  Tabs,
 } from "antd";
 import type { ProductScope, ProductAlternative } from "../shared/domain";
 import { api } from "./api";
@@ -68,6 +69,9 @@ export function ProductSelection({
   onSend: (text: string, mode?: EvaluationMode) => Promise<void>;
 }) {
   const [form] = Form.useForm();
+  const [selectionTab, setSelectionTab] = useState("recommended");
+  const customProducts: { name?: string; version?: string }[] =
+    Form.useWatch("custom", form) ?? [];
   const autoPlanRequests = useRef(new Set<string>());
   const [refreshingInfo, setRefreshingInfo] = useState(false);
   const combinations = scope.combinations ?? [];
@@ -93,17 +97,13 @@ export function ProductSelection({
         scope.status === "pending"
           ? (draft.custom ?? [])
           : scope.selected.filter((p) => !recommended.has(key(p))),
-      strategy:
-        scope.status === "pending"
-          ? scope.strategy || draft.strategy || ""
-          : scope.strategy,
     });
   }, [projectId, scope.revision, form]);
   async function generatePlans() {
     setBusy(true);
     try {
       await onSend(
-        "请 project_context 读取现有候选产品、策略和 revision，必要时 wiki_overview 读取总览核实。使用 recommend_product_plans 生成1–3套选型建议，明确每套建议选哪些产品、各产品分工和方案理由。互为替代的产品分别给方案，不要默认把所有候选组合。保留已有候选、基本信息及已确认范围，不要再次 recommend_products。完成后等待用户采用方案。",
+        "请 project_context 读取现有候选产品和 revision，必要时 wiki_overview 读取总览核实。使用 recommend_product_plans 生成1–3套选型建议，明确每套建议选哪些产品、各产品分工和方案理由。互为替代的产品分别给方案，不要默认把所有候选组合。保留已有候选、基本信息及已确认范围，不要再次 recommend_products。完成后等待用户采用方案。",
       );
     } catch (e) {
       if (e instanceof Error) message.error(e.message);
@@ -114,17 +114,21 @@ export function ProductSelection({
   useEffect(() => {
     const requestKey = projectId + ":" + scope.revision;
     if (
+      selectionTab === "recommended" &&
+      !locked &&
+      scope.status === "pending" &&
       scope.recommendations.length &&
       !combinations.length &&
       !active &&
       !busy &&
-      scope.status !== "legacy" &&
       !autoPlanRequests.current.has(requestKey)
     ) {
       autoPlanRequests.current.add(requestKey);
       void generatePlans();
     }
   }, [
+    selectionTab,
+    locked,
     projectId,
     scope.revision,
     scope.status,
@@ -155,7 +159,6 @@ export function ProductSelection({
         body: JSON.stringify({
           expectedRevision: scope.revision,
           selected: [...scope.selected, p],
-          strategy: scope.strategy,
         }),
       });
       await onRefresh();
@@ -194,43 +197,26 @@ export function ProductSelection({
         body: JSON.stringify({
           expectedRevision: scope.revision,
           selected,
-          strategy: values.strategy ?? "",
         }),
       });
       await onRefresh();
       message.success("产品范围已确认，可继续销售项匹配");
     } catch (e) {
+      if (e && typeof e === "object" && "errorFields" in e) {
+        setSelectionTab("manual");
+        message.warning("请补全自主选品的必填信息");
+        return;
+      }
       if (e instanceof Error) message.error(e.message);
     } finally {
       setBusy(false);
     }
   }
   return (
-    <div className="tab-content">
-      <div className="section-toolbar">
-        <div>
-          <h3>产品选型</h3>
-          {scope.knowledgeRelease && (
-            <Tag color="blue">知识版本 · {scope.knowledgeRelease.name}</Tag>
-          )}
-          <p>先基于整份清单比较产品，再按售前策略确定匹配范围。</p>
-        </div>
-        <Button
-          data-guide="recommend-products"
-          loading={busy}
-          disabled={active || locked || scope.status === "confirmed"}
-          onClick={() => {
-            setBusy(true);
-            void onSend(
-              `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。我的售前偏好：${form.getFieldValue("strategy") || "暂无额外偏好"}。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据，从总览逐字提取 productId 产品标识、productLine 产品线、department 产品部门、owner 负责人，缺失则留空，基本信息需要 evidence.quote 逐字引用；并通过 combinations 给出1–3套推荐组成，每套明确产品及版本、各产品分工与简洁组合理由。互为替代的产品不要默认组合。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
-            )
-              .catch(() => {})
-              .finally(() => setBusy(false));
-          }}
-        >
-          生成产品推荐
-        </Button>
-      </div>
+    <div className="tab-content product-selection">
+      {scope.knowledgeRelease && (
+        <Tag color="blue">知识版本 · {scope.knowledgeRelease.name}</Tag>
+      )}
       {scope.status === "legacy" ? (
         <Alert
           type="info"
@@ -246,13 +232,7 @@ export function ProductSelection({
             .map((p) => `${p.name}${p.version ? " " + p.version : ""}`)
             .join("、")}
         />
-      ) : (
-        <Alert
-          type="info"
-          showIcon
-          message="推荐不等于选择。确认产品后，Agent 才会进入销售项匹配。"
-        />
-      )}
+      ) : null}
       <Modal
         title="产品推荐详情"
         open={!!detail}
@@ -355,326 +335,409 @@ export function ProductSelection({
           </div>
         )}
       </Modal>
-      {!!scope.recommendations.length && (
-        <section className="recommendation-compositions">
-          <div className="composition-heading">
-            <h4>推荐选型方案</h4>
-            <span>AI 建议如何选择产品</span>
-          </div>
-          <p className="selection-plan-explainer">
-            选择一套建议方案，再确认产品范围。也可以在下方调整产品。
-          </p>
-          {combinations.length ? (
-            combinations.map((c, i) => {
-              const chosen =
-                c.products.every((p) => selectedProducts.includes(key(p))) &&
-                selectedProducts.length === c.products.length;
-              return (
-                <article
-                  className={`composition-card scheme-list-row ${chosen ? "chosen" : ""}`}
-                  key={i}
-                >
-                  <div className="composition-title">
-                    <div>
-                      <span className="recommendation-eyebrow">
-                        方案 {String(i + 1).padStart(2, "0")} ·{" "}
-                        {c.products.length === 1 ? "单产品" : "组合产品"}
-                      </span>
-                      <h4>{c.name}</h4>
-                    </div>
-                    <Button
-                      type={chosen ? "default" : "primary"}
-                      disabled={!canChoose}
-                      onClick={() => chooseProducts(c.products)}
-                    >
-                      {chosen ? "已勾选" : "采用这套方案"}
-                    </Button>
-                  </div>
-                  <div className="scheme-members">
-                    {c.products.map((p) => (
-                      <Tag key={key(p)}>
-                        {scope.recommendations.find((r) => key(r) === key(p))
-                          ?.productName || p.name}
-                        {p.version ? ` · ${p.version}` : ""}
-                      </Tag>
-                    ))}
-                  </div>
-                  <p className="composition-summary">{c.summary}</p>
-                  <Button
-                    type="link"
-                    className="scheme-detail-link"
-                    onClick={() =>
-                      modal.info({
-                        title: c.name,
-                        width: 600,
-                        content: (
-                          <div>
-                            <KnowledgeMarkdown text={c.summary} />
-                            {c.products.map((p) => (
-                              <section key={key(p)}>
-                                <h5>
-                                  {p.name} {p.version}
-                                </h5>
-                                <KnowledgeMarkdown text={p.role} />
-                              </section>
-                            ))}
-                          </div>
-                        ),
-                      })
-                    }
-                  >
-                    查看分工与理由
-                  </Button>
-                </article>
-              );
-            })
-          ) : (
-            <div className="selection-plan-empty">
-              <div>
-                <b>
-                  {active || busy ? "正在生成选型建议" : "暂未生成选型建议"}
-                </b>
-                <p>
-                  {active || busy
-                    ? "方案生成后会自动列在这里，请关注对话中的进度。"
-                    : "自动生成尚未返回方案，可点击重试。不会改变已确认范围。"}
-                </p>
-              </div>
-              <Button
-                loading={busy}
-                disabled={active || busy || scope.status === "legacy"}
-                onClick={() => void generatePlans()}
-              >
-                重新生成建议
-              </Button>
-            </div>
-          )}
-          <p className="recommendation-footnote">
-            一键选中会替换候选产品勾选，保留自定义产品；点击“确认产品范围”后生效。
-          </p>
-        </section>
-      )}
-      {!!alternatives.length && (
-        <section className="product-alternatives">
-          <h4>其他产品可满足</h4>
-          <p className="muted">
-            以下为范围外建议，尚未计入正式匹配及销售清单。加入范围后继续评估。
-          </p>
-          {alternatives.map(({ id, data: a }) => {
-            const included = scope.selected.some(
-              (p) => key(p) === key(a.product),
-            );
-            return (
-              <article key={id} className="product-alternative-row">
-                <div>
-                  <Space wrap>
-                    <b>{a.product.name}</b>
-                    <Tag>{a.product.version || "版本待核实"}</Tag>
-                    <Tag>{a.requirementId}</Tag>
-                  </Space>
-                  <p>{a.sales}</p>
-                  <Button
-                    type="link"
-                    onClick={() =>
-                      modal.info({
-                        title: `${a.product.name} · ${a.requirementId}`,
-                        width: 640,
-                        content: (
-                          <>
-                            <KnowledgeMarkdown text={a.reason} />
-                            <h5>销售项原文证据</h5>
-                            <KnowledgeMarkdown text={a.evidence.quote} />
-                          </>
-                        ),
-                      })
-                    }
-                  >
-                    查看能力与证据
-                  </Button>
-                </div>
-                <Button
-                  disabled={
-                    included || active || busy || scope.status !== "confirmed"
-                  }
-                  onClick={() =>
-                    modal.confirm({
-                      title: `将 ${a.product.name} 加入匹配范围？`,
-                      content:
-                        "保留原产品及已有结论，后续评估可使用新增产品。不会自动纳入报告或销售清单。",
-                      okText: "加入范围",
-                      onOk: () => addAlternative(a.product),
-                    })
-                  }
-                >
-                  {included ? "已加入范围" : "加入匹配范围"}
-                </Button>
-              </article>
-            );
-          })}
-        </section>
-      )}
       <Form
         form={form}
         layout="vertical"
         disabled={locked || active}
         style={{ marginTop: 20 }}
       >
-        <div className="candidate-list-toolbar">
-          <b>候选产品 · {scope.recommendations.length}</b>
-          <Button
-            size="small"
-            type="text"
-            loading={refreshingInfo}
-            disabled={active || refreshingInfo || !scope.recommendations.length}
-            onClick={() => void refreshProductInfo()}
-          >
-            更新产品资料
-          </Button>
-        </div>
-        <Form.Item name="choices">
-          <Checkbox.Group className="recommended-product-grid">
-            {scope.recommendations.map((p) => (
-              <article
-                data-guide="product-options"
-                key={key(p)}
-                className={`recommended-product-card ${selectedProducts.includes(key(p)) ? "selected" : ""}`}
-              >
-                <div
-                  className="product-card-heading"
-                  onClick={() => setDetailKey(key(p))}
-                >
-                  <span className="product-card-icon">
-                    <AppstoreOutlined />
-                  </span>
-                  <div
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`查看 ${p.productName || p.name} 销售项目录`}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setDetailKey(key(p));
+        <Tabs
+          data-guide="product-options"
+          className="product-selection-tabs"
+          activeKey={selectionTab}
+          onChange={setSelectionTab}
+          items={[
+            {
+              key: "recommended",
+              label: "AI推荐",
+              forceRender: true,
+              children: (
+                <>
+                  <div className="selection-tab-toolbar">
+                    <span className="muted">
+                      基于当前清单推荐产品及组合方案
+                    </span>{" "}
+                    <Button
+                      data-guide="recommend-products"
+                      loading={busy}
+                      disabled={
+                        active || locked || scope.status === "confirmed"
                       }
-                    }}
-                  >
-                    <h4>{p.productName || p.name}</h4>
-                    <div className="product-card-identity">
-                      <code>{p.productId || "标识未提供"}</code>
-                      {p.version && <Tag>{p.version}</Tag>}
-                    </div>
+                      onClick={() => {
+                        setBusy(true);
+                        void onSend(
+                          `请结合本项目招标清单，直接调用 wiki_overview 读取固定的 wiki/overview.md 总览，不要搜索或猜测总览路径，比较可能满足需求的产品。使用 recommend_products 保存候选产品、覆盖范围、缺口和推荐依据，从总览逐字提取 productId 产品标识、productLine 产品线、department 产品部门、owner 负责人，缺失则留空，基本信息需要 evidence.quote 逐字引用；并通过 combinations 给出1–3套推荐组成，每套明确产品及版本、各产品分工与简洁组合理由。互为替代的产品不要默认组合。只完成产品推荐，等待我在产品选型页选择或自定义并确认后再匹配销售项。`,
+                        )
+                          .catch(() => {})
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      生成产品推荐
+                    </Button>
                   </div>
-                  <Checkbox
-                    value={key(p)}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`选择 ${p.name} ${p.version}`}
-                  />
-                </div>
-                <div
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`查看 ${p.name} 产品资料`}
-                  onClick={() => setDetailKey(key(p))}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setDetailKey(key(p));
-                    }
-                  }}
-                >
-                  <ProductBasics product={p} compact />
-                </div>
-                <Button
-                  className="product-details-button"
-                  disabled={false}
-                  type="link"
-                  onClick={() => setDetailKey(key(p))}
-                >
-                  查看销售项目录与依据
-                </Button>
-              </article>
-            ))}
-          </Checkbox.Group>
-        </Form.Item>
-        {!scope.recommendations.length && (
-          <p className="muted">
-            暂无推荐。先上传文件并让 Agent
-            读取清单与总览，或直接添加自定义产品。
-          </p>
-        )}
-        <Form.List name="custom">
-          {(fields, { add, remove }) => (
-            <>
-              {fields.map((field) => (
-                <div
-                  key={field.key}
-                  style={{ borderTop: "1px solid #dce4df", paddingTop: 12 }}
-                >
-                  <Form.Item
-                    name={[field.name, "name"]}
-                    label="自定义产品名称"
-                    rules={[{ required: true, message: "请输入产品名称" }]}
-                  >
-                    <Input maxLength={200} />
+                  {!!scope.recommendations.length && (
+                    <section className="recommendation-compositions">
+                      <div className="composition-heading">
+                        <h4>推荐选型方案</h4>
+                        <span>AI 建议如何选择产品</span>
+                      </div>
+                      <p className="selection-plan-explainer">
+                        选择一套建议方案，再确认产品范围。可到“自主选品”页签调整勾选。
+                      </p>
+                      {combinations.length ? (
+                        combinations.map((c, i) => {
+                          const chosen =
+                            c.products.every((p) =>
+                              selectedProducts.includes(key(p)),
+                            ) && selectedProducts.length === c.products.length;
+                          return (
+                            <article
+                              className={`composition-card scheme-list-row ${chosen ? "chosen" : ""}`}
+                              key={i}
+                            >
+                              <div className="composition-title">
+                                <div>
+                                  <span className="recommendation-eyebrow">
+                                    方案 {String(i + 1).padStart(2, "0")} ·{" "}
+                                    {c.products.length === 1
+                                      ? "单产品"
+                                      : "组合产品"}
+                                  </span>
+                                  <h4>{c.name}</h4>
+                                </div>
+                                <Button
+                                  type={chosen ? "default" : "primary"}
+                                  disabled={!canChoose}
+                                  onClick={() => chooseProducts(c.products)}
+                                >
+                                  {chosen ? "已勾选" : "采用这套方案"}
+                                </Button>
+                              </div>
+                              <div className="scheme-members">
+                                {c.products.map((p) => (
+                                  <Tag key={key(p)}>
+                                    {scope.recommendations.find(
+                                      (r) => key(r) === key(p),
+                                    )?.productName || p.name}
+                                    {p.version ? ` · ${p.version}` : ""}
+                                  </Tag>
+                                ))}
+                              </div>
+                              <p className="composition-summary">{c.summary}</p>
+                              <Button
+                                type="link"
+                                className="scheme-detail-link"
+                                onClick={() =>
+                                  modal.info({
+                                    title: c.name,
+                                    width: 600,
+                                    content: (
+                                      <div>
+                                        <KnowledgeMarkdown text={c.summary} />
+                                        {c.products.map((p) => (
+                                          <section key={key(p)}>
+                                            <h5>
+                                              {p.name} {p.version}
+                                            </h5>
+                                            <KnowledgeMarkdown text={p.role} />
+                                          </section>
+                                        ))}
+                                      </div>
+                                    ),
+                                  })
+                                }
+                              >
+                                查看分工与理由
+                              </Button>
+                            </article>
+                          );
+                        })
+                      ) : (
+                        <div className="selection-plan-empty">
+                          <div>
+                            <b>
+                              {active || busy
+                                ? "正在生成选型建议"
+                                : "暂未生成选型建议"}
+                            </b>
+                            <p>
+                              {active || busy
+                                ? "方案生成后会自动列在这里，请关注对话中的进度。"
+                                : "自动生成尚未返回方案，可点击重试。不会改变已确认范围。"}
+                            </p>
+                          </div>
+                          <Button
+                            loading={busy}
+                            disabled={
+                              active || busy || scope.status === "legacy"
+                            }
+                            onClick={() => void generatePlans()}
+                          >
+                            重新生成建议
+                          </Button>
+                        </div>
+                      )}
+                      <p className="recommendation-footnote">
+                        一键选中会替换候选产品勾选，保留自定义产品；点击“确认产品范围”后生效。
+                      </p>
+                    </section>
+                  )}
+                  {!!alternatives.length && (
+                    <section className="product-alternatives">
+                      <h4>其他产品可满足</h4>
+                      <p className="muted">
+                        以下为范围外建议，尚未计入正式匹配及销售清单。加入范围后继续评估。
+                      </p>
+                      {alternatives.map(({ id, data: a }) => {
+                        const included = scope.selected.some(
+                          (p) => key(p) === key(a.product),
+                        );
+                        return (
+                          <article key={id} className="product-alternative-row">
+                            <div>
+                              <Space wrap>
+                                <b>{a.product.name}</b>
+                                <Tag>{a.product.version || "版本待核实"}</Tag>
+                                <Tag>{a.requirementId}</Tag>
+                              </Space>
+                              <p>{a.sales}</p>
+                              <Button
+                                type="link"
+                                onClick={() =>
+                                  modal.info({
+                                    title: `${a.product.name} · ${a.requirementId}`,
+                                    width: 640,
+                                    content: (
+                                      <>
+                                        <KnowledgeMarkdown text={a.reason} />
+                                        <h5>销售项原文证据</h5>
+                                        <KnowledgeMarkdown
+                                          text={a.evidence.quote}
+                                        />
+                                      </>
+                                    ),
+                                  })
+                                }
+                              >
+                                查看能力与证据
+                              </Button>
+                            </div>
+                            <Button
+                              disabled={
+                                included ||
+                                active ||
+                                busy ||
+                                scope.status !== "confirmed"
+                              }
+                              onClick={() =>
+                                modal.confirm({
+                                  title: `将 ${a.product.name} 加入匹配范围？`,
+                                  content:
+                                    "保留原产品及已有结论，后续评估可使用新增产品。不会自动纳入报告或销售清单。",
+                                  okText: "加入范围",
+                                  onOk: () => addAlternative(a.product),
+                                })
+                              }
+                            >
+                              {included ? "已加入范围" : "加入匹配范围"}
+                            </Button>
+                          </article>
+                        );
+                      })}
+                    </section>
+                  )}
+                  {!scope.recommendations.length && (
+                    <p className="selection-plan-explainer">
+                      暂无选型建议。可生成推荐，或切换到“自主选品”直接选择。
+                    </p>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: "manual",
+              label: "自主选品",
+              forceRender: true,
+              children: (
+                <>
+                  <div className="candidate-list-toolbar">
+                    <b>候选产品 · {scope.recommendations.length}</b>
+                    <Button
+                      size="small"
+                      type="text"
+                      loading={refreshingInfo}
+                      disabled={
+                        active ||
+                        refreshingInfo ||
+                        !scope.recommendations.length
+                      }
+                      onClick={() => void refreshProductInfo()}
+                    >
+                      更新产品资料
+                    </Button>
+                  </div>
+                  <Form.Item name="choices">
+                    <Checkbox.Group className="recommended-product-grid">
+                      {scope.recommendations.map((p) => (
+                        <article
+                          key={key(p)}
+                          className={`recommended-product-card ${selectedProducts.includes(key(p)) ? "selected" : ""}`}
+                        >
+                          <div
+                            className="product-card-heading"
+                            onClick={() => setDetailKey(key(p))}
+                          >
+                            <span className="product-card-icon">
+                              <AppstoreOutlined />
+                            </span>
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`查看 ${p.productName || p.name} 销售项目录`}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setDetailKey(key(p));
+                                }
+                              }}
+                            >
+                              <h4>{p.productName || p.name}</h4>
+                              <div className="product-card-identity">
+                                <code>{p.productId || "标识未提供"}</code>
+                                {p.version && <Tag>{p.version}</Tag>}
+                              </div>
+                            </div>
+                            <Checkbox
+                              value={key(p)}
+                              onClick={(e) => e.stopPropagation()}
+                              aria-label={`选择 ${p.name} ${p.version}`}
+                            />
+                          </div>
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`查看 ${p.name} 产品资料`}
+                            onClick={() => setDetailKey(key(p))}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setDetailKey(key(p));
+                              }
+                            }}
+                          >
+                            <ProductBasics product={p} compact />
+                          </div>
+                          <Button
+                            className="product-details-button"
+                            disabled={false}
+                            type="link"
+                            onClick={() => setDetailKey(key(p))}
+                          >
+                            查看销售项目录与依据
+                          </Button>
+                        </article>
+                      ))}
+                    </Checkbox.Group>
                   </Form.Item>
-                  <Space wrap>
-                    <Form.Item
-                      name={[field.name, "version"]}
-                      label="版本（可选）"
-                    >
-                      <Input maxLength={100} />
-                    </Form.Item>
-                    <Form.Item
-                      name={[field.name, "path"]}
-                      label="知识库产品路径（可选）"
-                    >
-                      <Input
-                        placeholder="wiki/entities/product.md"
-                        maxLength={500}
-                      />
-                    </Form.Item>
-                  </Space>
-                  <Button type="text" danger onClick={() => remove(field.name)}>
-                    移除自定义项
-                  </Button>
-                </div>
-              ))}
-              <Button
-                disabled={locked || active}
-                onClick={() => add({ name: "", version: "", path: "" })}
-              >
-                添加自定义产品
-              </Button>
-            </>
-          )}
-        </Form.List>
-        <Form.Item
-          name="strategy"
-          label="本项目售前选择策略"
-          style={{ marginTop: 20 }}
-        >
-          <Input.TextArea
-            rows={3}
-            maxLength={2000}
-            placeholder="例如：优先沿用客户已部署产品；可组合多产品，但尽量减少额外模块。"
-          />
-        </Form.Item>
-        <p className="muted">
-          自定义产品仍需在知识库检索核实。产生匹配结果后保留原范围；可从已核实的替代建议追加产品。
-        </p>
-        <Space wrap>
-          <Button
-            type="primary"
-            loading={busy}
-            disabled={locked || active}
-            data-guide="confirm-products"
-            onClick={() => void confirm()}
-          >
-            确认产品范围
-          </Button>
-          {scope.status === "confirmed" && (
-            <span className="muted">范围已确认，请在对话框下方开始评估。</span>
-          )}
-        </Space>
+                  {!scope.recommendations.length && (
+                    <p className="muted">
+                      暂无候选产品，可先生成推荐或在下方添加自定义产品。
+                    </p>
+                  )}
+                  <Form.List name="custom">
+                    {(fields, { add, remove }) => (
+                      <>
+                        {fields.map((field) => (
+                          <div
+                            key={field.key}
+                            style={{
+                              borderTop: "1px solid #dce4df",
+                              paddingTop: 12,
+                            }}
+                          >
+                            <Form.Item
+                              name={[field.name, "name"]}
+                              label="自定义产品名称"
+                              rules={[
+                                { required: true, message: "请输入产品名称" },
+                              ]}
+                            >
+                              <Input maxLength={200} />
+                            </Form.Item>
+                            <Space wrap>
+                              <Form.Item
+                                name={[field.name, "version"]}
+                                label="版本（可选）"
+                              >
+                                <Input maxLength={100} />
+                              </Form.Item>
+                              <Form.Item
+                                name={[field.name, "path"]}
+                                label="产品页路径（可选）"
+                              >
+                                <Input
+                                  placeholder="wiki/entities/products/product.md"
+                                  maxLength={500}
+                                />
+                              </Form.Item>
+                            </Space>
+                            <Button
+                              type="text"
+                              danger
+                              onClick={() => remove(field.name)}
+                            >
+                              移除自定义项
+                            </Button>
+                          </div>
+                        ))}
+                        <Button
+                          disabled={locked || active}
+                          onClick={() =>
+                            add({ name: "", version: "", path: "" })
+                          }
+                        >
+                          添加自定义产品
+                        </Button>
+                      </>
+                    )}
+                  </Form.List>
+                  <p className="muted">
+                    可从候选产品中逐个选择，也可添加自定义产品。销售项将在确认范围后核实。
+                  </p>
+                </>
+              ),
+            },
+          ]}
+        />
+        <div className="selection-confirm-bar">
+          <div>
+            <b>
+              已选{" "}
+              {selectedProducts.length +
+                customProducts.filter((p) => p.name?.trim()).length}{" "}
+              个产品
+            </b>
+            <p className="muted">
+              两个页签共用选择结果，确认后用于销售项匹配。
+            </p>
+          </div>
+          <Space wrap>
+            <Button
+              type="primary"
+              loading={busy}
+              disabled={locked || active}
+              data-guide="confirm-products"
+              onClick={() => void confirm()}
+            >
+              确认产品范围
+            </Button>
+            {scope.status === "confirmed" && (
+              <span className="muted">
+                范围已确认，请在对话框下方开始评估。
+              </span>
+            )}
+          </Space>
+        </div>
       </Form>
     </div>
   );
