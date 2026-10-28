@@ -1,4 +1,5 @@
 import { runEvidencePipeline } from "./assessment-pipeline.js";
+import { isTransientFailure } from "./run-recovery.js";
 import { z } from "zod";
 import {
   type RequirementInput,
@@ -64,7 +65,16 @@ const judgment = z.object({
     .array(
       verificationSchema.shape.checks.element
         .omit({ evidence: true })
-        .extend({ evidence: z.array(proof) }),
+        .extend({
+          evidence: z.array(proof),
+          quantitative: verificationSchema.shape.checks.element.shape.quantitative
+            .unwrap()
+            .extend({
+              actualValue: z.number().nullish().transform((value) => value ?? undefined),
+              actualUnit: z.string().nullish().transform((value) => value ?? undefined),
+            })
+            .optional(),
+        }),
     )
     .min(1),
 });
@@ -309,6 +319,7 @@ export async function runQuickAssessment(
     retryable: boolean;
     at: string;
   }[] = [];
+  const terminalErrors: unknown[] = [];
   const judged = new Set<string>();
   const activeRetrievals = new Map<string, number>();
   let batchStage = "",
@@ -452,6 +463,7 @@ export async function runQuickAssessment(
       } catch (error) {
         pipelineSignal.throwIfAborted();
         counters.failed++;
+        terminalErrors.push(error);
         await failure([row.data.id], "检索", error);
         return null;
       } finally {
@@ -614,7 +626,10 @@ export async function runQuickAssessment(
               attempt + 1,
               attempt === 0,
             );
-            if (attempt === 1) counters.failed += batch.length;
+            if (attempt === 1) {
+              counters.failed += batch.length;
+              terminalErrors.push(error);
+            }
           }
         }
         batchStage = "";
@@ -630,7 +645,9 @@ export async function runQuickAssessment(
   );
   if (counters.failed)
     throw new AppError(
-      422,
+      terminalErrors.length > 0 && terminalErrors.every(isTransientFailure)
+        ? 503
+        : 422,
       `${counters.failed} 条初评未完成，已有结果已保存，可重新开始继续`,
     );
   return true;

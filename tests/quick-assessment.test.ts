@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { quantitativePass } from "../shared/accuracy.js";
+import { assessmentSchema } from "../shared/domain.js";
 import {
   buildQuickAssessment,
   parseQuickJudgments,
@@ -39,6 +41,32 @@ const packet = (): QuickPacket => ({
     },
   ],
   searches: [{ subrequirementId: "T-1.1", query: "反潜回", traceId: 1 }],
+});
+test("模型未知实测值可返回 null，转换后仍为未知且满足保存类型约束", () => {
+  const item = {
+    requirementId: "T-1",
+    selections: [],
+    checks: [{
+      subrequirementId: "T-1.1", level: "unknown", reason: "缺少实测规格",
+      direction: "核实容量", delivery: "unknown", deliveryConfirmed: false,
+      evidence: [],
+      quantitative: {
+        operator: ">=", requiredValue: 128, actualValue: null,
+        unit: "门", actualUnit: null, condition: "跨控制器", confirmed: false,
+      },
+    }],
+  };
+  const parsed = parseQuickJudgments({ assessments: [item] }, ["T-1"])[0];
+  const q = parsed.checks[0].quantitative!;
+  assert.equal(q.actualValue, undefined);
+  assert.equal(q.actualUnit, undefined);
+  assert.equal(quantitativePass(q), null);
+  const assessment = buildQuickAssessment(packet(), parsed, { name: "A", version: "v1", path: "" });
+  assert.equal(assessment.level, "unknown");
+  assert.equal(assessmentSchema.safeParse(assessment).success, true);
+  const invalid = structuredClone(item);
+  (invalid.checks[0].quantitative as Record<string, unknown>).actualValue = "unknown";
+  assert.throws(() => parseQuickJudgments({ assessments: [invalid] }, ["T-1"]));
 });
 test("批量计划不丢条款，控制每次模型请求数量与输入预算", () => {
   const packets = Array.from({ length: 12 }, (_, i) => ({

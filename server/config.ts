@@ -31,6 +31,7 @@ const env = z
     DATABASE_URL: z.string().default(""),
     COOKIE_SECURE: z.enum(["true", "false"]).default("false"),
     MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(8).default(2),
+    MAX_AUTO_RECOVERIES: z.coerce.number().int().min(0).max(5).default(3),
     RUN_TIMEOUT_MS: z.coerce.number().int().min(1000).default(900000),
     MODEL_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).default(600000),
     MODEL_IDLE_TIMEOUT_MS: z.coerce.number().int().min(1000).default(120000),

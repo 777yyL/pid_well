@@ -92,6 +92,8 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS conversations (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id), title text NOT NULL, context jsonb NOT NULL DEFAULT '[]', plan jsonb NOT NULL DEFAULT '[]', created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS runs (id uuid PRIMARY KEY, conversation_id uuid NOT NULL REFERENCES conversations(id), project_id uuid NOT NULL REFERENCES projects(id), user_id uuid NOT NULL REFERENCES users(id), input text NOT NULL, idempotency_key uuid NOT NULL, status text NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled','interrupted')), error text, turn_count integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE(user_id,idempotency_key))`,
   `ALTER TABLE runs ADD COLUMN IF NOT EXISTS evaluation_mode text NOT NULL DEFAULT 'agent' CHECK(evaluation_mode IN ('quick','agent'))`,
+  `ALTER TABLE runs ADD COLUMN IF NOT EXISTS auto_resume_count integer NOT NULL DEFAULT 0`,
+  `ALTER TABLE runs ADD COLUMN IF NOT EXISTS resume_after timestamptz NOT NULL DEFAULT now()`,
   `CREATE UNIQUE INDEX IF NOT EXISTS one_active_project_run ON runs(project_id) WHERE status IN ('queued','running')`,
   `CREATE TABLE IF NOT EXISTS messages (id uuid PRIMARY KEY, conversation_id uuid NOT NULL REFERENCES conversations(id), run_id uuid REFERENCES runs(id), role text NOT NULL, content text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS run_events (id bigserial PRIMARY KEY, run_id uuid NOT NULL REFERENCES runs(id), type text NOT NULL, payload jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
@@ -157,9 +159,16 @@ export async function audit(
   action: string,
   data: unknown,
 ) {
-  const [row] = await db.query<{ id: number }>(
+  const [row] = await db.query<{ id: number | string }>(
     "INSERT INTO audit_log(project_id,user_id,run_id,action,data) VALUES($1,$2,$3,$4,$5) RETURNING id",
     [projectId, userId, runId, action, JSON.stringify(data)],
   );
-  return row.id;
+  // pg returns bigserial as a string; PGlite returns a number.
+  const raw = row?.id;
+  const id = typeof raw === "number" || (typeof raw === "string" && /^\d+$/.test(raw))
+    ? Number(raw)
+    : NaN;
+  if (!Number.isSafeInteger(id) || id <= 0)
+    throw new Error("审计记录 ID 无效或超出安全整数范围");
+  return id;
 }

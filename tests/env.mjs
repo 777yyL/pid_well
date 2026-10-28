@@ -9,6 +9,8 @@ process.env.MAX_NO_PROGRESS_TURNS = "3";
 process.env.MODEL_REQUEST_TIMEOUT_MS = "1000";
 process.env.MODEL_IDLE_TIMEOUT_MS = "1000";
 process.env.RUN_HEARTBEAT_MS = "200";
+// Legacy lifecycle cases assert one execution attempt; recovery has its own tests.
+process.env.MAX_AUTO_RECOVERIES = "0";
 process.on("exit", () => {
   const target = resolve(directory);
   if (

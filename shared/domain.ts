@@ -224,6 +224,7 @@ export interface ChatMessage {
   run_id: string | null;
 }
 export interface Run {
+  auto_resume_count?: number;
   evaluation_mode?: "quick" | "agent";
   id: string;
   conversation_id: string;

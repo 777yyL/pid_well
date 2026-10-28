@@ -16,7 +16,7 @@ import {
   quickStageLabels,
   type EvaluationMode,
 } from "./workflow-guide";
-import { activityCopy } from "./activity-copy";
+
 import { malformedToolText } from "../shared/agent-protocol";
 import type {
   ChatMessage,
@@ -197,23 +197,31 @@ export function Chat({
   const phaseSeconds = Number.isFinite(phaseTimestamp)
     ? Math.max(0, Math.floor((now - phaseTimestamp) / 1000))
     : 0;
-  const activity = activityCopy({
-    tool: currentTool ? String(currentTool.event.payload.toolName) : undefined,
-    phase,
-    waitingSeconds: phaseSeconds,
-    disconnected: !!connectionError,
-    stale: heartbeatAge > 20,
-    queued: activeRun?.status === "queued",
-  });
   async function submit(text = draft, mode: EvaluationMode = "agent") {
     if (!text.trim() || activeRun || sending || archived) return;
     try {
       await onSend(text, mode);
       setDraft("");
     } catch {
-      /* Notification is handled by workspace hook. */
+      /* Workspace reports send errors. */
     }
   }
+  const activityMessages = events
+    .reduce<{ id: number; text: string; at: string }[]>((items, event) => {
+      const text =
+        event.type === "quick_progress"
+          ? String(event.payload.message ?? "")
+          : event.type === "tool_execution_start"
+            ? (names[String(event.payload.toolName)] ?? "")
+            : event.type === "run_retry"
+              ? String(event.payload.reason ?? "")
+              : "";
+      if (text && items.at(-1)?.text !== text)
+        items.push({ id: event.id, text, at: event.created_at });
+      return items;
+    }, [])
+    .filter((item) => item.text !== phase)
+    .slice(-4);
   const plan = conversation?.plan ?? [];
   const currentStep =
     plan.find((s) => s.status === "running") ??
@@ -318,7 +326,8 @@ export function Chat({
           ))
         )}
         {activeTools.length > 0 && (
-          <div className="tool-trail">
+          <details className="tool-trail">
+            <summary>工具执行记录（{tools.length}）</summary>
             {activeTools.map(({ event, finish }) => (
               <details
                 key={event.id}
@@ -354,7 +363,7 @@ export function Chat({
                 )}
               </details>
             ))}
-          </div>
+          </details>
         )}
         {streaming && (
           <article className="chat-message assistant">
@@ -406,144 +415,123 @@ export function Chat({
           </details>
         )}
         {quickProgress && !activeRun && (
-          <Alert
-            className="quick-result"
-            type={
-              quickProgress.payload.stage === "failed"
-                ? "warning"
-                : quickProgress.payload.stage === "completed"
-                  ? "success"
-                  : "info"
-            }
-            showIcon
-            role="status"
-            aria-live="polite"
-            message={
-              quickStageLabels[String(quickProgress.payload.stage)] ??
-              "快速初评进度"
-            }
-            description={
-              <>
-                <div className="activity-counts">
-                  <span>
-                    清单条款 <b>{Number(quickProgress.payload.total ?? 0)}</b>
-                  </span>
-                  <span>
-                    已检索 <b>{Number(quickProgress.payload.retrieved ?? 0)}</b>
-                  </span>
-                  <span>
-                    已判断 <b>{Number(quickProgress.payload.judged ?? 0)}</b>
-                  </span>
-                  <span>
-                    已入库 <b>{Number(quickProgress.payload.saved ?? 0)}</b>
-                  </span>
-                  <span>
-                    待处理失败{" "}
-                    <b>{Number(quickProgress.payload.failed ?? 0)}</b>
-                  </span>
-                </div>
-                {Boolean(quickProgress.payload.message) && (
-                  <p>{String(quickProgress.payload.message)}</p>
-                )}
-              </>
-            }
-          />
+          <div className="task-stream-finished">
+            {String(quickProgress.payload.message ?? "初评结果已保存")}
+          </div>
+        )}
+        {activeRun && sameConversation && !streaming && (
+          <div className="task-narration" aria-label="实际执行动态">
+            {activityMessages.map((item) => (
+              <div key={item.id}>
+                <time>
+                  {new Date(item.at).toLocaleTimeString("zh-CN", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </time>
+                <span>{item.text}</span>
+              </div>
+            ))}
+          </div>
         )}
         {activeRun && sameConversation && (
           <div
-            className={`live-activity ${connectionError || heartbeatAge > 20 ? "connection-warning" : ""}`}
+            className={`task-stream ${connectionError || heartbeatAge > 20 ? "connection-warning" : ""}`}
             role="status"
             aria-live="polite"
           >
             <div className="activity-title">
               <SyncOutlined spin={!connectionError && heartbeatAge <= 20} />
-              <b>{quickProgress ? "快速初评" : activity.title}</b>
+              <b>
+                {connectionError
+                  ? "正在重新连接，连通后自动同步任务状态"
+                  : activeRun.status === "queued"
+                    ? retry?.payload.kind === "resume"
+                      ? `连接暂时中断，${Math.max(0, Math.ceil((new Date(String(retry.payload.resumeAt)).getTime() - now) / 1000))} 秒后自动继续`
+                      : "正在等待执行"
+                    : phase}
+              </b>
               <span>
                 {Math.floor(elapsed / 60)}分{elapsed % 60}秒
               </span>
             </div>
-            <p>
-              {quickProgress
-                ? "候选检索、证据判断与结果保存分批执行，已入库数量随实际保存更新。"
-                : activity.description}
-            </p>
-            <div className="activity-current-step">
-              <span>当前动作</span>
-              <b>{phase}</b>
-            </div>
-            {Array.isArray(quickProgress?.payload.activeRetrievals) &&
-              quickProgress.payload.activeRetrievals.length > 0 && (
-                <small>
-                  并行检索：
-                  {(
-                    quickProgress.payload.activeRetrievals as {
-                      requirementId: string;
-                      startedAt: number;
-                    }[]
-                  )
-                    .map(
-                      (r) =>
-                        `${r.requirementId}（${Math.max(0, Math.floor((now - r.startedAt) / 1000))}秒）`,
+            <details className="task-stream-details">
+              <summary>进度与执行详情</summary>
+              {Array.isArray(quickProgress?.payload.activeRetrievals) &&
+                quickProgress.payload.activeRetrievals.length > 0 && (
+                  <small>
+                    并行检索：
+                    {(
+                      quickProgress.payload.activeRetrievals as {
+                        requirementId: string;
+                        startedAt: number;
+                      }[]
                     )
-                    .join("、")}
+                      .map(
+                        (r) =>
+                          `${r.requirementId}（${Math.max(0, Math.floor((now - r.startedAt) / 1000))}秒）`,
+                      )
+                      .join("、")}
+                  </small>
+                )}
+              {currentTool?.event.payload.toolName === "wiki_product_catalog" &&
+                catalogProgress && (
+                  <p className="muted">
+                    销售项目录已读 {String(catalogProgress.payload.loaded)} /{" "}
+                    {String(catalogProgress.payload.total)} 页 ·{" "}
+                    {String(catalogProgress.payload.path)}
+                  </p>
+                )}
+              {quickProgress ? (
+                <div className="activity-counts">
+                  {[
+                    ["已检索", quickProgress.payload.retrieved],
+                    ["模型已判断", quickProgress.payload.judged],
+                    ["已保存", quickProgress.payload.saved],
+                    ["失败", quickProgress.payload.failed],
+                  ].map(([label, count]) => (
+                    <span key={String(label)}>
+                      {String(label)} <b>{Number(count ?? 0)}</b>
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                progress && (
+                  <div className="activity-counts">
+                    <span className="activity-counter">
+                      原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b>{" "}
+                      / {Number(progress.payload.totalLines ?? 0)} 行
+                    </span>
+                    <span className="activity-counter">
+                      条款 <b>{Number(progress.payload.requirements)}</b> ·
+                      已确认 <b>{Number(progress.payload.confirmed)}</b>
+                    </span>
+                    <span className="activity-counter">
+                      评估 <b>{Number(progress.payload.assessments)}</b> ·
+                      已复核 <b>{Number(progress.payload.reviewed)}</b>
+                    </span>
+                    <span className="activity-counter">
+                      执行 <b>{Number(progress.payload.turns)}</b> 轮
+                    </span>
+                  </div>
+                )
+              )}
+              {progress && (
+                <small>
+                  最近同步 {heartbeatAge} 秒前 · 当前动作耗时 {phaseSeconds}秒
                 </small>
               )}
-            {currentTool?.event.payload.toolName === "wiki_product_catalog" &&
-              catalogProgress && (
-                <p className="muted">
-                  销售项目录已读 {String(catalogProgress.payload.loaded)} /{" "}
-                  {String(catalogProgress.payload.total)} 页 ·{" "}
-                  {String(catalogProgress.payload.path)}
-                </p>
-              )}
-            {quickProgress ? (
-              <div className="activity-counts">
-                {[
-                  ["已检索", quickProgress.payload.retrieved],
-                  ["模型已判断", quickProgress.payload.judged],
-                  ["已保存", quickProgress.payload.saved],
-                  ["失败", quickProgress.payload.failed],
-                ].map(([label, count]) => (
-                  <span key={String(label)}>
-                    {String(label)} <b>{Number(count ?? 0)}</b>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              progress && (
-                <div className="activity-counts">
-                  <span className="activity-counter">
-                    原文已读 <b>{Number(progress.payload.readLines ?? 0)}</b> /{" "}
-                    {Number(progress.payload.totalLines ?? 0)} 行
-                  </span>
-                  <span className="activity-counter">
-                    条款 <b>{Number(progress.payload.requirements)}</b> · 已确认{" "}
-                    <b>{Number(progress.payload.confirmed)}</b>
-                  </span>
-                  <span className="activity-counter">
-                    评估 <b>{Number(progress.payload.assessments)}</b> · 已复核{" "}
-                    <b>{Number(progress.payload.reviewed)}</b>
-                  </span>
-                  <span className="activity-counter">
-                    执行 <b>{Number(progress.payload.turns)}</b> 轮
-                  </span>
+              {retry && (
+                <div className="activity-retry">
+                  <WarningOutlined /> 自动恢复 {Number(retry.payload.attempt)} /
+                  {Number(retry.payload.maxAttempts ?? 2)}：
+                  {String(retry.payload.reason)}
                 </div>
-              )
-            )}
-            {progress && (
-              <small>
-                最近同步 {heartbeatAge} 秒前 · 当前动作耗时 {phaseSeconds}秒
-              </small>
-            )}
-            {retry && (
-              <div className="activity-retry">
-                <WarningOutlined /> 自动恢复 {Number(retry.payload.attempt)} /
-                2：{String(retry.payload.reason)}
-              </div>
-            )}
+              )}
+            </details>
           </div>
         )}
-        {latestRun?.error && (
+        {latestRun?.error && !activeRun && (
           <Alert
             className="run-error"
             type={latestRun.status === "failed" ? "error" : "warning"}

@@ -13,6 +13,11 @@ import { config } from "./config.js";
 import { loadSettings } from "./settings.js";
 import { createTools } from "./tools.js";
 import { runQuickAssessment } from "./quick-assessment.js";
+import {
+  isTransientFailure,
+  scheduleRunRecovery,
+  type RecoveryPolicy,
+} from "./run-recovery.js";
 import type { Run } from "../shared/domain.js";
 import { AppError } from "./errors.js";
 import { malformedToolText } from "../shared/agent-protocol.js";
@@ -187,7 +192,14 @@ export class AgentRunner {
   private timer?: ReturnType<typeof setInterval>;
   private polling = false;
   private closing = false;
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private recoveryPolicy: RecoveryPolicy = {
+      maxRecoveries: config.MAX_AUTO_RECOVERIES,
+      delaysMs: [3000, 10000, 30000],
+      maxTotalTurns: config.MAX_TOTAL_AGENT_TURNS,
+    },
+  ) {}
   async emit(runId: string, type: string, payload: Record<string, unknown>) {
     await this.db.query(
       "INSERT INTO run_events(run_id,type,payload) VALUES($1,$2,$3)",
@@ -195,9 +207,23 @@ export class AgentRunner {
     );
   }
   async start() {
-    await this.db.query(
-      "UPDATE runs SET status='interrupted',error='服务重启中断了执行；已保存的结果仍保留，可点击恢复',updated_at=now() WHERE status='running'",
+    const abandoned = await this.db.query<{ id: string }>(
+      "SELECT id FROM runs WHERE status='running'",
     );
+    for (const run of abandoned) {
+      if (
+        !(await scheduleRunRecovery(
+          this.db,
+          run.id,
+          "服务重启，正在从已保存结果恢复",
+          this.recoveryPolicy,
+        ))
+      )
+        await this.db.query(
+          "UPDATE runs SET status='interrupted',error='服务重启中断了执行；自动恢复预算已用完，请检查后恢复',updated_at=now() WHERE id=$1 AND status='running'",
+          [run.id],
+        );
+    }
     this.timer = setInterval(() => {
       void this.poll().catch(() => {});
     }, 700);
@@ -209,7 +235,7 @@ export class AgentRunner {
     try {
       while (this.active.size < config.MAX_CONCURRENT_RUNS) {
         const [run] = await this.db.query<Run & { user_id: string }>(
-          `UPDATE runs SET status='running',updated_at=now() WHERE id=(SELECT id FROM runs WHERE status='queued' AND NOT(project_id=ANY($1::uuid[])) ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
+          `UPDATE runs SET status='running',error=NULL,updated_at=now() WHERE id=(SELECT id FROM runs WHERE status='queued' AND resume_after<=now() AND NOT(project_id=ANY($1::uuid[])) ORDER BY created_at LIMIT 1) AND status='queued' RETURNING *`,
           [[...this.projectLocks]],
         );
         if (!run) break;
@@ -258,7 +284,7 @@ export class AgentRunner {
       evaluationMode: run.evaluation_mode,
       emit,
     });
-    let turns = 0;
+    let turns = run.turn_count ?? 0;
     let timeout = false;
     let capped = false;
     let truncated = false;
@@ -732,8 +758,11 @@ export class AgentRunner {
               );
               if (result.stopReason !== "stop")
                 throw new AppError(
-                  422,
-                  "模型批次输出未完成，请减少批量或增加输出上限",
+                  isTransientFailure(result.errorMessage) ? 503 : 422,
+                  result.stopReason === "error" ||
+                    result.stopReason === "aborted"
+                    ? publicModelError(result.errorMessage ?? "模型请求中断")
+                    : "模型批次输出未完成，请减少批量或增加输出上限",
                 );
               return result.content
                 .filter((p) => p.type === "text")
@@ -769,7 +798,12 @@ export class AgentRunner {
             timestamp: Date.now(),
           });
           await emit("assistant_end", { text: summary });
-        } else await agent.prompt(run.input);
+        } else
+          await agent.prompt(
+            run.auto_resume_count
+              ? `系统自动恢复第 ${run.auto_resume_count} 次：先查询 project_context，保留已保存结果及人工确认，不重复已完成写入；在当前产品范围内继续。原始用户请求：${run.input}`
+              : run.input,
+          );
         while (
           (protocolError ||
             requestExpired ||
@@ -824,7 +858,7 @@ export class AgentRunner {
           [run.id],
         );
         const error = agent.state.errorMessage;
-        const status =
+        let status =
           current.status === "cancelled"
             ? "cancelled"
             : this.closing
@@ -864,13 +898,33 @@ export class AgentRunner {
           "UPDATE runs SET status=$1,error=$2,updated_at=now() WHERE id=$3",
           [status, reason, run.id],
         );
+        if (
+          current.status !== "cancelled" &&
+          !timeout &&
+          !capped &&
+          !truncated &&
+          !stalled &&
+          (this.closing || requestExpired || isTransientFailure(error))
+        ) {
+          if (
+            await scheduleRunRecovery(
+              this.db,
+              run.id,
+              this.closing
+                ? "服务停止后将自动继续"
+                : "模型连接暂时不可用，正在从已保存状态自动恢复",
+              this.recoveryPolicy,
+            )
+          )
+            status = "queued";
+        }
         await emit("run_finished", { status, error: reason });
       } catch (error) {
         const [current] = await this.db.query<{ status: string }>(
           "SELECT status FROM runs WHERE id=$1",
           [run.id],
         );
-        const status =
+        let status =
           current.status === "cancelled"
             ? "cancelled"
             : this.closing
@@ -888,6 +942,26 @@ export class AgentRunner {
           "UPDATE runs SET status=$1,error=$2,updated_at=now() WHERE id=$3 AND status<>'cancelled'",
           [status, reason, run.id],
         );
+        if (
+          current.status !== "cancelled" &&
+          !timeout &&
+          !capped &&
+          !stalled &&
+          !truncated &&
+          (this.closing || isTransientFailure(error))
+        ) {
+          if (
+            await scheduleRunRecovery(
+              this.db,
+              run.id,
+              this.closing
+                ? "服务停止后将自动继续"
+                : "请求暂时失败，正在从已保存结果自动恢复",
+              this.recoveryPolicy,
+            )
+          )
+            status = "queued";
+        }
         await emit("run_finished", { status, error: reason });
       } finally {
         clearInterval(heartbeat);

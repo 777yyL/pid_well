@@ -303,6 +303,94 @@
   white-space: pre-wrap;
   margin: 6px 0;
 }
+.chat-pane .task-narration {
+  margin: 16px 0 6px;
+  color: #657487;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.chat-pane .task-narration > div {
+  display: flex;
+  gap: 10px;
+  margin: 5px 0;
+}
+.chat-pane .task-narration time {
+  font-size: 11px;
+  color: #8a96a5;
+  flex: none;
+}
+.chat-pane .task-stream {
+  margin: 8px 0 18px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  font-size: 12px;
+  color: #68788b;
+}
+.chat-pane .task-stream .activity-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.chat-pane .task-stream .activity-title > .anticon {
+  color: #6888b6;
+  background: transparent;
+  font-size: 12px;
+}
+.chat-pane .task-stream .activity-title b {
+  font-size: 13px;
+  font-weight: 500;
+  color: #536b8b;
+  overflow-wrap: anywhere;
+}
+.chat-pane .task-stream .activity-title > span:last-child {
+  font-size: 11px;
+  color: #8a96a5;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.chat-pane .task-stream-details {
+  margin: 8px 0 0 20px;
+  font-size: 11px;
+}
+.chat-pane .task-stream-details > summary {
+  cursor: pointer;
+  color: #8491a1;
+}
+.chat-pane .task-stream-details[open] {
+  padding-bottom: 8px;
+}
+.chat-pane .task-stream .activity-counts {
+  margin: 8px 0;
+}
+.chat-pane .task-stream.connection-warning {
+  color: #8e6c35;
+}
+.chat-pane .task-stream-finished {
+  margin: 12px 0;
+  font-size: 12px;
+  color: #718096;
+}
+.chat-pane .quick-failures {
+  background: transparent;
+  border: 0;
+  border-left: 2px solid #d8be8b;
+  border-radius: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+}
+.chat-pane details.tool-trail {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #8995a4;
+  font-size: 11px;
+}
+.chat-pane details.tool-trail > summary {
+  padding: 5px 0;
+  font-weight: 400;
+}
 @media (max-width: 700px) {
   .chat-pane .chat-scroll {
     padding: 14px 16px;
