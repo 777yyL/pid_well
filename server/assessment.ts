@@ -202,19 +202,11 @@ export async function validateVerification(
 ) {
   const v = item.verification;
   if (!v) {
-    throw new AppError(
-      422,
-      "新评估必须提供新版逐子要求核验与证据覆盖，历史结果可保留人工修订",
-    );
+    throw new AppError(422, "新评估必须提供核验结论与证据，可按原条款整体评估");
   }
-  const subs = requirement.subrequirements;
-  if (!subs?.length) throw new AppError(422, "请先抽取并确认可核验子要求");
-  if (
-    new Set(v.checks.map((c) => c.subrequirementId)).size !== v.checks.length ||
-    v.checks.length !== subs.length ||
-    subs.some((s) => !v.checks.some((c) => c.subrequirementId === s.id))
-  )
-    throw new AppError(422, "核验必须逐一覆盖全部子要求且编号唯一");
+  const checkIds = new Set(v.checks.map((c) => c.subrequirementId));
+  if (checkIds.size !== v.checks.length)
+    throw new AppError(422, "核验项编号不能重复");
   if (new Set(v.contributions.map((c) => c.id)).size !== v.contributions.length)
     throw new AppError(422, "贡献项编号不能重复");
   const scope = await productScope(db, projectId);
@@ -229,8 +221,8 @@ export async function validateVerification(
     if (!selected) throw new AppError(422, "贡献项产品/版本不在确认范围");
     const root = await resolveProductPage(db, projectId, selected);
     if (!root) throw new AppError(422, "贡献项产品页尚未读取");
-    if (c.subrequirementIds.some((id) => !subs.some((s) => s.id === id)))
-      throw new AppError(422, "贡献项关联了未知子要求");
+    if (c.subrequirementIds.some((id) => !checkIds.has(id)))
+      throw new AppError(422, "贡献项关联了本次未提供的核验项");
     let found = false;
     for (const e of c.evidence) {
       const [page] = await db.query<{
@@ -330,9 +322,9 @@ export async function validateVerification(
       throw new AppError(422, "正式依赖必须由选用实体的依赖关系或必选声明支持");
   }
   for (const check of v.checks) {
-    const required = subs.find(
-      (s) => s.id === check.subrequirementId,
-    )!.required;
+    const required =
+      requirement.subrequirements?.find((s) => s.id === check.subrequirementId)
+        ?.required ?? true;
     if (["exact", "no_match"].includes(check.level) && !check.evidence.length)
       throw new AppError(422, "明确结论需要逐子要求证据");
     if (
@@ -392,35 +384,26 @@ export async function validateVerification(
           throw new AppError(422, "标题或元数据不能替代能力证据");
       }
     }
-    if (["unknown", "no_match"].includes(check.level)) {
-      const search = v.supplementalSearch.find(
-        (s) => s.subrequirementId === check.subrequirementId,
-      );
-      if (!search)
-        throw new AppError(422, "待确认/不满足子要求必须补充检索并记录轨迹");
-      const [trace] = await db.query<{
-        data: {
-          requirementId: string;
-          subrequirementId?: string;
-          query: string;
-          scopeRevision: number;
-        };
-      }>(
-        "SELECT data FROM audit_log WHERE project_id=$1 AND id=$2 AND action IN ('product_scoped_search','product_global_search')",
-        [projectId, search.traceId],
-      );
-      if (
-        !trace ||
-        trace.data.requirementId !== item.requirementId ||
-        trace.data.subrequirementId !== check.subrequirementId ||
-        trace.data.query !== search.query ||
-        trace.data.scopeRevision !== scope.revision
-      )
-        throw new AppError(
-          422,
-          "补充检索轨迹不存在、范围已变化或父/子条款不一致",
-        );
-    }
+  }
+  for (const search of v.supplementalSearch) {
+    const [trace] = await db.query<{
+      data: {
+        requirementId: string;
+        subrequirementId?: string;
+        query: string;
+        scopeRevision: number;
+      };
+    }>(
+      "SELECT data FROM audit_log WHERE project_id=$1 AND id=$2 AND action IN ('product_scoped_search','product_global_search')",
+      [projectId, search.traceId],
+    );
+    if (
+      !trace ||
+      trace.data.requirementId !== item.requirementId ||
+      trace.data.query !== search.query ||
+      trace.data.scopeRevision !== scope.revision
+    )
+      throw new AppError(422, "补充检索轨迹不存在、范围已变化或不属于当前条款");
   }
   for (const i of v.integrations)
     if (

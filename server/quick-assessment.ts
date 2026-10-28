@@ -63,18 +63,22 @@ const judgment = z.object({
   ),
   checks: z
     .array(
-      verificationSchema.shape.checks.element
-        .omit({ evidence: true })
-        .extend({
-          evidence: z.array(proof),
-          quantitative: verificationSchema.shape.checks.element.shape.quantitative
-            .unwrap()
-            .extend({
-              actualValue: z.number().nullish().transform((value) => value ?? undefined),
-              actualUnit: z.string().nullish().transform((value) => value ?? undefined),
-            })
-            .optional(),
-        }),
+      verificationSchema.shape.checks.element.omit({ evidence: true }).extend({
+        evidence: z.array(proof),
+        quantitative: verificationSchema.shape.checks.element.shape.quantitative
+          .unwrap()
+          .extend({
+            actualValue: z
+              .number()
+              .nullish()
+              .transform((value) => value ?? undefined),
+            actualUnit: z
+              .string()
+              .nullish()
+              .transform((value) => value ?? undefined),
+          })
+          .optional(),
+      }),
     )
     .min(1),
 });
@@ -192,12 +196,20 @@ export function buildQuickAssessment(
       integrations: [],
       supplementalSearch: checks
         .filter((c) => ["unknown", "no_match"].includes(c.level))
-        .map((c) => {
-          const s = packet.searches.findLast(
-            (x) => x.subrequirementId === c.subrequirementId,
-          );
-          if (!s) throw new Error("缺少真实补查记录");
-          return { ...s, outcome: c.reason };
+        .flatMap((c) => {
+          const s =
+            packet.searches.findLast(
+              (x) => x.subrequirementId === c.subrequirementId,
+            ) ?? packet.searches.at(-1);
+          return s
+            ? [
+                {
+                  ...s,
+                  subrequirementId: c.subrequirementId,
+                  outcome: c.reason,
+                },
+              ]
+            : [];
         }),
       counterchecks: {
         direction: pending,
@@ -502,10 +514,12 @@ export async function runQuickAssessment(
                 for (const check of value.checks.filter(
                   (c) => c.level === "unknown" || c.level === "no_match",
                 )) {
-                  const child = packet.requirement.subrequirements!.find(
+                  const child = packet.requirement.subrequirements?.find(
                     (c) => c.id === check.subrequirementId,
-                  );
-                  if (!child) throw new Error("未知子条款");
+                  ) ?? {
+                    id: check.subrequirementId,
+                    raw: packet.requirement.raw,
+                  };
                   batchStage = "retrieving";
                   batchMessage = `正在补查 ${value.requirementId} / ${child.id}`;
                   await progress("retrieving", batchMessage);

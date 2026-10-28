@@ -377,16 +377,6 @@ export async function searchSelected(
 ) {
   const started = Date.now();
   await requireClause(db, projectId, requirementId);
-  if (subrequirementId) {
-    const [r] = await db.query<{
-      data: { subrequirements?: { id: string }[] };
-    }>("SELECT data FROM requirements WHERE project_id=$1 AND id=$2", [
-      projectId,
-      requirementId,
-    ]);
-    if (!r?.data.subrequirements?.some((s) => s.id === subrequirementId))
-      throw new AppError(422, "检索子要求不属于该父条款");
-  }
   if (prepared) {
     if (prepared.projectId !== projectId || prepared.runId !== runId)
       throw new AppError(409, "检索上下文不属于当前任务");

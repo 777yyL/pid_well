@@ -102,14 +102,16 @@ export const verificationSchema = z.object({
       evidence: z.array(evidenceSchema),
     }),
   ),
-  supplementalSearch: z.array(
-    z.object({
-      subrequirementId: z.string().min(1),
-      query: z.string().min(1),
-      outcome: z.string().min(1),
-      traceId: z.number().int().positive(),
-    }),
-  ),
+  supplementalSearch: z
+    .array(
+      z.object({
+        subrequirementId: z.string().min(1),
+        query: z.string().min(1),
+        outcome: z.string().min(1),
+        traceId: z.number().int().positive(),
+      }),
+    )
+    .default([]),
   counterchecks: z.object({
     direction: z.string().min(1),
     omissions: z.string().min(1),

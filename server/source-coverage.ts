@@ -15,7 +15,7 @@ export const coverageSchema = z.object({
         status: z.enum(["extracted", "excluded", "pending"]),
         reason: z.string().min(1),
         requirementIds: z.array(z.string()),
-        subrequirementIds: z.array(z.string()),
+        subrequirementIds: z.array(z.string()).default([]),
       }),
     )
     .min(1)
@@ -67,15 +67,6 @@ export async function saveCoverage(
         throw new AppError(422, "覆盖条目与关联要求原文不一致");
       if (entry.status === "extracted" && !linked.length)
         throw new AppError(422, "已抽取条目必须关联要求");
-      if (
-        entry.subrequirementIds.some(
-          (id) =>
-            !linked.some((r) =>
-              r?.data.subrequirements?.some((s) => s.id === id),
-            ),
-        )
-      )
-        throw new AppError(422, "原文条目关联了未知子要求");
     }
     await audit(
       tx,

@@ -46,26 +46,42 @@ test("模型未知实测值可返回 null，转换后仍为未知且满足保存
   const item = {
     requirementId: "T-1",
     selections: [],
-    checks: [{
-      subrequirementId: "T-1.1", level: "unknown", reason: "缺少实测规格",
-      direction: "核实容量", delivery: "unknown", deliveryConfirmed: false,
-      evidence: [],
-      quantitative: {
-        operator: ">=", requiredValue: 128, actualValue: null,
-        unit: "门", actualUnit: null, condition: "跨控制器", confirmed: false,
+    checks: [
+      {
+        subrequirementId: "T-1.1",
+        level: "unknown",
+        reason: "缺少实测规格",
+        direction: "核实容量",
+        delivery: "unknown",
+        deliveryConfirmed: false,
+        evidence: [],
+        quantitative: {
+          operator: ">=",
+          requiredValue: 128,
+          actualValue: null,
+          unit: "门",
+          actualUnit: null,
+          condition: "跨控制器",
+          confirmed: false,
+        },
       },
-    }],
+    ],
   };
   const parsed = parseQuickJudgments({ assessments: [item] }, ["T-1"])[0];
   const q = parsed.checks[0].quantitative!;
   assert.equal(q.actualValue, undefined);
   assert.equal(q.actualUnit, undefined);
   assert.equal(quantitativePass(q), null);
-  const assessment = buildQuickAssessment(packet(), parsed, { name: "A", version: "v1", path: "" });
+  const assessment = buildQuickAssessment(packet(), parsed, {
+    name: "A",
+    version: "v1",
+    path: "",
+  });
   assert.equal(assessment.level, "unknown");
   assert.equal(assessmentSchema.safeParse(assessment).success, true);
   const invalid = structuredClone(item);
-  (invalid.checks[0].quantitative as Record<string, unknown>).actualValue = "unknown";
+  (invalid.checks[0].quantitative as Record<string, unknown>).actualValue =
+    "unknown";
   assert.throws(() => parseQuickJudgments({ assessments: [invalid] }, ["T-1"]));
 });
 test("批量计划不丢条款，控制每次模型请求数量与输入预算", () => {
@@ -80,6 +96,45 @@ test("批量计划不丢条款，控制每次模型请求数量与输入预算",
   );
   assert.equal(batches.flat().length, 12);
   assert.throws(() => planQuickBatches([packet()], 10), /预算/);
+});
+test("快速初评可按父条款核验，无补查记录不阻塞待确认结果", () => {
+  const p = packet();
+  p.searches = [];
+  const judgment = parseQuickJudgments(
+    {
+      assessments: [
+        {
+          requirementId: "T-1",
+          selections: [],
+          checks: [
+            {
+              subrequirementId: "T-1",
+              level: "unknown",
+              reason: "缺少明确证据",
+              direction: "反潜回",
+              delivery: "unknown",
+              deliveryConfirmed: false,
+              evidence: [],
+            },
+          ],
+        },
+      ],
+    },
+    ["T-1"],
+  )[0];
+  const result = buildQuickAssessment(p, judgment, {
+    name: "A",
+    version: "v1",
+    path: "",
+  });
+  assert.equal(result.level, "unknown");
+  assert.deepEqual(result.verification!.supplementalSearch, []);
+  const raw = JSON.parse(JSON.stringify(result));
+  delete raw.verification.supplementalSearch;
+  assert.deepEqual(
+    assessmentSchema.parse(raw).verification!.supplementalSearch,
+    [],
+  );
 });
 test("模型输出必须恰好覆盖当前批次，拒绝重复、遗漏或额外条款", () => {
   const item = {

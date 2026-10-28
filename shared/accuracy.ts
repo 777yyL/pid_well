@@ -85,12 +85,15 @@ export function aggregateVerdict(
   requirement: RequirementInput,
 ) {
   const v = item.verification;
-  if (!v || !requirement.subrequirements?.length) return "unknown" as const;
-  const required = requirement.subrequirements.filter((s) => s.required);
+  if (!v) return "unknown" as const;
+  const required = v.checks.filter(
+    (check) =>
+      requirement.subrequirements?.find(
+        (sub) => sub.id === check.subrequirementId,
+      )?.required !== false,
+  );
   if (!required.length) return "unknown" as const;
-  const levels = required.map((s) => {
-    const c = v.checks.find((c) => c.subrequirementId === s.id);
-    if (!c) return "unknown";
+  const levels = required.map((c) => {
     const numeric = c.quantitative ? quantitativePass(c.quantitative) : true;
     if (numeric === false && c.evidence.length) return "no_match";
     if (numeric === null) return "unknown";

@@ -357,7 +357,16 @@ test("产品优先检索、全局补查、范围外建议与用户追加范围",
       searchGlobalFallback(db, pid, rid, fallback),
       /尚未完成产品内/,
     );
-    const first = await searchSelected(db, pid, rid, "T-2", "门禁", 5);
+    const first = await searchSelected(
+      db,
+      pid,
+      rid,
+      "T-2",
+      "门禁",
+      5,
+      undefined,
+      "Agent临时核验点",
+    );
     assert.equal(first.results[0].sales, "门禁管理");
     assert.ok(
       first.results[0].excerpts.some((e) => e.quote.includes("支持门禁认证")),

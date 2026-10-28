@@ -197,13 +197,14 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
       },
     };
     const copy = () => structuredClone(item);
-    await t.test("缺少子要求、标题、跨版本与接口条件门禁", async () => {
-      const missing = copy();
-      missing.verification!.checks.pop();
-      await assert.rejects(
-        () => saveAssessments(db, projectId, [missing], {}),
-        /全部子要求/,
-      );
+    await t.test("允许整条核验，保留标题、跨版本与接口条件校验", async () => {
+      const whole = copy();
+      whole.verification!.checks = [
+        { ...whole.verification!.checks[0], subrequirementId: "T-1" },
+      ];
+      for (const c of whole.verification!.contributions)
+        c.subrequirementIds = ["T-1"];
+      await validateVerification(db, projectId, whole, requirement);
       const title = copy();
       title.verification!.checks[0].evidence = [
         { ...proof(0), lineStart: 2, lineEnd: 2, quote: "title: 同名销售项" },
@@ -276,7 +277,7 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
       );
     });
     await t.test(
-      "未知必须逐子要求补查；AI 自检不能消除未知或冒充人工",
+      "未知可直接保存，补查与自检粒度由 Agent 决定但不能冒充人工",
       async () => {
         const unknown = copy();
         unknown.level = "unknown";
@@ -284,10 +285,7 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
         unknown.verification!.checks[1].level = "unknown";
         unknown.verification!.checks[1].evidence = [];
         unknown.verification!.integrations[0].confirmed = false;
-        await assert.rejects(
-          () => saveAssessments(db, projectId, [unknown], {}),
-          /补充检索/,
-        );
+        await validateVerification(db, projectId, unknown, requirement);
         const traceId = await audit(
           db,
           projectId,
@@ -296,7 +294,6 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
           "product_scoped_search",
           {
             requirementId: "T-1",
-            subrequirementId: "T-1.2",
             query: "补查播报",
             scopeRevision: 1,
             matchCount: 0,
@@ -326,10 +323,7 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
           coverageConfirmed: true,
           reason: "逐子要求自检仍有接口和能力未知",
         };
-        await assert.rejects(
-          () => review.execute("test", { reviews: [input] }),
-          /逐子要求/,
-        );
+        await review.execute("test", { reviews: [input] });
         await review.execute("test", {
           reviews: [
             {
@@ -367,7 +361,7 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
         await assert.rejects(
           () =>
             review.execute("test", { reviews: [{ ...input, revision: 1 }] }),
-          /逐子要求|版本/,
+          /版本/,
         );
       },
     );
@@ -500,6 +494,106 @@ test("准确性全链路：组合证据、未知、补查、自检、原文漏�
         assert.deepEqual(assessment.data, JSON.parse(JSON.stringify(original)));
         assert.equal(assessment.source, "human");
         assert.equal(assessment.reviewed, true);
+      },
+    );
+    await t.test(
+      "历史已确认且无子要求的条款无需重抽取，可直接保存和整条自检",
+      async () => {
+        const legacy: RequirementInput = {
+          id: "T-4",
+          documentId: docId,
+          module: "协议",
+          type: "接口",
+          raw: "支持 MQTT",
+          lineStart: 2,
+          lineEnd: 2,
+        };
+        await saveRequirements(db, projectId, [legacy], runId);
+        await db.query(
+          "UPDATE requirements SET confirmed=true WHERE project_id=$1 AND id='T-4'",
+          [projectId],
+        );
+        const value = copy();
+        value.requirementId = "T-4";
+        value.level = "unknown";
+        value.sales = [];
+        value.ok = [];
+        value.evidence = [];
+        value.verification = {
+          ...value.verification!,
+          checks: [
+            {
+              ...value.verification!.checks[0],
+              subrequirementId: "T-4",
+              level: "unknown",
+              evidence: [],
+            },
+          ],
+          contributions: [],
+          integrationRequired: false,
+          integrations: [],
+          supplementalSearch: [],
+        };
+        await saveAssessments(db, projectId, [value], { runId });
+        const review = createTools({
+          db,
+          projectId,
+          conversationId,
+          runId,
+          userId,
+          emit: async () => {},
+        }).find((tool) => tool.name === "review_assessments")!;
+        await review.execute("test", {
+          reviews: [
+            {
+              requirementId: "T-4",
+              revision: 1,
+              checks: value.criteria,
+              reason: "整条核对后仍缺少明确能力证据，保留待核实结论",
+            },
+          ],
+        });
+        const [saved] = await assessmentRows(db, projectId, 1, 0, {
+          ids: ["T-4"],
+        });
+        assert.equal(saved.level, "unknown");
+        assert.equal(saved.reviewed, true);
+        const [original] = await db.query<{ data: RequirementInput }>(
+          "SELECT data FROM requirements WHERE project_id=$1 AND id='T-4'",
+          [projectId],
+        );
+        assert.equal(original.data.subrequirements, undefined);
+        await saveCoverage(
+          db,
+          projectId,
+          {
+            documentId: docId,
+            entries: [
+              {
+                id: "whole-clause",
+                lineStart: 2,
+                lineEnd: 2,
+                status: "extracted",
+                reason: "按整条原文评估",
+                requirementIds: ["T-4"],
+              },
+            ],
+          },
+          { userId },
+        );
+        const forged = structuredClone(value);
+        forged.verification!.supplementalSearch = [
+          {
+            subrequirementId: "T-4",
+            query: "伪造检索",
+            outcome: "未命中",
+            traceId: 999999,
+          },
+        ];
+        await assert.rejects(
+          () => saveAssessments(db, projectId, [forged], { runId }),
+          /轨迹/,
+        );
       },
     );
   } finally {

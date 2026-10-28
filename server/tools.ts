@@ -403,7 +403,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "wiki_search_batch",
       "批量检索产品内证据",
-      "按业务模块批量检索最多5个已确认子要求，自动按产品页及版本限制范围，只读取候选实体。相同查询与实体复用，逐项返回独立 traceId 和快照原文片段。失败项须处理，不能当作未命中；每条仍需独立判断与核验。片段不足再 wiki_read。",
+      "按业务模块批量检索最多5个条款或自主核验点，subrequirementId可省略，无需预登记子要求。自动按产品页及版本限制范围，只读取候选实体。相同查询与实体复用，逐项返回独立 traceId 和快照原文片段。接口失败不能当作未命中，片段不足再 wiki_read。",
       z.object({
         queries: z
           .array(
@@ -505,7 +505,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "save_assessments",
       "保存匹配结果",
-      "保存结构化匹配，五项依据必须完整。销售项必须正式名称，每个销售项附带实体页快照证据。已人工确认的结果禁止覆盖。保存后尚未复核。",
+      "保存匹配结果。可按整条原文评估，verification.checks 可仅一个核验项并使用父条款T编号，无需预先登记子要求；复杂条款由Agent自主细分。unknown可直接记录缺口，supplementalSearch可为空，已有真实轨迹按父条款复用。销售项须附实体页快照证据；不覆盖人工结果，保存后尚未自检。",
       z.object({ assessments: assessmentSchema.array().min(1).max(30) }),
       async (args) =>
         saveAssessments(db, projectId, args.assessments, { runId }),
@@ -513,7 +513,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "review_assessments",
       "记录逐条复核",
-      "逐条核验五项依据、子系统覆盖、必选项和依赖，只有完全核验后记录复核。若发现错误先 save_assessments 修正，再读取最新版 revision 复核。",
+      "逐条自检依据、原文覆盖及依赖。可直接记录整条checks和reason，points为可选明细，不强制按子要求重填。发现错误先修正，使用实际保存的revision。AI自检不等于人工或独立复核。",
       z.object({
         reviews: z
           .array(
@@ -548,23 +548,21 @@ export function createTools(ctx: ToolContext): AgentTool[] {
               0,
               { ids: [review.requirementId] },
             );
-            if (currentAssessment?.verification) {
+            if (currentAssessment?.verification && review.points?.length) {
               const checks = currentAssessment.verification.checks;
               if (
-                !review.points ||
                 new Set(review.points.map((p) => p.subrequirementId)).size !==
-                  checks.length ||
-                review.points.length !== checks.length ||
-                checks.some(
-                  (c) =>
-                    !review.points!.some(
-                      (p) => p.subrequirementId === c.subrequirementId,
+                  review.points.length ||
+                review.points.some(
+                  (p) =>
+                    !checks.some(
+                      (c) => c.subrequirementId === p.subrequirementId,
                     ),
                 )
               )
                 throw new AppError(
                   422,
-                  "AI 自检必须逐子要求指出证据或缺口，不能仅声明 coverageConfirmed",
+                  "自检明细编号重复或未关联本次核验项，可省略 points 按整条结论自检",
                 );
               for (const point of review.points) {
                 const check = checks.find(
