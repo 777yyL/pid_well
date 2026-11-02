@@ -97,12 +97,12 @@ export async function createReport(
   db: Database,
   projectId: string,
   format: "xlsx" | "csv" | "html",
-  kind: "full" | "sales" = "full",
+  kind: "full" | "sales" | "matches" = "full",
   frozen?: ReportSnapshot,
   stage: ReportStage = "formal",
 ) {
-  if (kind === "sales" && format !== "xlsx")
-    throw new AppError(400, "销售项清单使用 XLSX 模板格式");
+  if (kind !== "full" && format !== "xlsx")
+    throw new AppError(400, "销售项清单和条款匹配记录使用 XLSX 格式");
   const snapshot = frozen ?? (await captureReport(db, projectId, stage));
   if (snapshot.project.id !== projectId)
     throw new AppError(400, "报告项目不一致");
@@ -209,7 +209,7 @@ export async function createReport(
     ]),
   );
   const id = randomUUID();
-  const name = `${project.name}-${preliminary ? "初评·待复核-" : ""}${kind === "sales" ? "销售项清单" : "评估报告"}${procurement.issues.length ? "（采购待核实）" : ""}.${format}`;
+  const name = `${project.name}-${preliminary ? "初评·待复核-" : ""}${kind === "sales" ? "销售项清单" : kind === "matches" ? "条款匹配记录" : "评估报告"}${kind !== "matches" && procurement.issues.length ? "（采购待核实）" : ""}.${format}`;
   const storageName = `${id}.${format}`;
   const manifest = {
     stage,
@@ -273,97 +273,174 @@ export async function createReport(
       ]);
       styleTable(status, [22, 110]);
     }
-    if (kind === "full") addOverview(book, snapshot, sales.length);
-    const sheet = book.addWorksheet("功能点匹配报告", {
-      views: [{ state: "frozen", ySplit: 1 }],
-    });
-    sheet.addRow(headers);
-    details.forEach((row) => sheet.addRow(row.map(safeCell)));
-    styleTable(
-      sheet,
-      [12, 18, 52, 30, 58, 14, 30, 30, 30, 48, 40, 80, 18, 40],
-      6,
-    );
-    const salesSheet = book.addWorksheet("销售项清单", {
-      views: [{ state: "frozen", ySplit: 1 }],
-    });
-    salesSheet.addRow(salesHeaders);
-    saleRows.forEach((row) =>
-      salesSheet.addRow(
-        row.map((value) =>
-          value === ""
-            ? null
-            : typeof value === "number"
-              ? value
-              : safeCell(value),
-        ),
-      ),
-    );
-    addSalesDetails(book, sales, salesSheet);
-    styleTable(salesSheet, [9, 30, 26, 28, 58, 9, 11, 15, 17, 58]);
-    for (const column of [7, 8, 9])
-      salesSheet.getColumn(column).numFmt =
-        column === 7 ? "#,##0.##" : "#,##0.00";
-    const purchasing = book.addWorksheet("采购核定事项");
-    purchasing.addRow(["类型", "核定事项"]);
-    purchasing.addRow([
-      "清单状态",
-      preliminary
-        ? "初评／待复核，不作为最终采购或报价依据"
-        : procurement.issues.length
-          ? "待核实参考清单，不作为最终采购或报价依据"
-          : "已通过实体与依赖核对，数量与授权范围仍需销售核定",
-    ]);
-    procurement.issues.forEach((issue) => purchasing.addRow(["待确认", issue]));
-    procurement.reused.forEach((r) =>
-      purchasing.addRow([
-        "组件复用",
-        `${r.requirementId} · ${r.product} ${r.version} / ${r.sales} → ${r.source}；${r.reason}`,
-      ]),
-    );
-    styleTable(purchasing, [18, 110]);
-    const provenance = book.addWorksheet("证据与版本");
-    provenance.addRow(["报告 ID", id]);
-    provenance.addRow(["知识库项目", project.wiki_project_id]);
-    provenance.addRow(["生成时间", manifest.generatedAt]);
-    provenance.addRow([
-      "产品选型版本",
-      snapshot.scope.revision,
-      snapshot.scope.status,
-    ]);
-    provenance.addRow([
-      "所选产品",
-      snapshot.scope.selected.map((p) => `${p.name} ${p.version}`).join("、"),
-    ]);
-    provenance.addRow(["售前策略", snapshot.scope.strategy]);
-    for (const d of snapshot.sourceCoverage ?? []) {
-      provenance.addRow([
-        "原文覆盖",
-        d.name,
-        `${coverageLabel(d.status)}；未检查行 ${d.uncheckedLines.join("、")}`,
+    if (kind === "matches") {
+      const sheet = book.addWorksheet("条款匹配记录", {
+        views: [{ state: "frozen", ySplit: 1 }],
+      });
+      sheet.addRow([
+        "编号",
+        "子系统 / 模块",
+        "需求原文",
+        "产品",
+        "版本",
+        "销售项",
+        "匹配结论",
+        "满足内容",
+        "缺口 / 待确认",
+        "说明",
+        "证据原文",
+        "证据位置",
+        "复核状态",
       ]);
-      for (const entry of d.entries)
-        provenance.addRow([
-          entry.id,
-          `L${entry.lineStart}-L${entry.lineEnd} ${entry.status}`,
-          `${entry.reason}；关联 ${entry.requirementIds.join("、")} / ${entry.subrequirementIds.join("、")}`,
-        ]);
-    }
-    provenance.addRow(["条款", "结果版本", "结论来源"]);
-    manifest.requirements.forEach((r) =>
-      provenance.addRow([r.id, r.revision, r.source]),
-    );
-    manifest.evidence.forEach((p) => provenance.addRow([p.id, p.path, p.hash]));
-    provenance.addRow(["销售项", "产品版本 / 模块 ID", "关联条款 / 快照"]);
-    manifest.sales.forEach((s) =>
+      for (const row of rows) {
+        const contributions =
+          row.verification?.contributions.filter((c) =>
+            ["purchase", "dependency", "existing"].includes(c.purpose),
+          ) ?? [];
+        sheet.addRow(
+          [
+            row.requirementId,
+            row.module,
+            row.requirement_raw,
+            [
+              ...new Set([row.product, ...contributions.map((c) => c.product)]),
+            ].join("、"),
+            [
+              ...new Set([row.version, ...contributions.map((c) => c.version)]),
+            ].join("、"),
+            contributions.length
+              ? contributions
+                  .map((c) => `${c.product} ${c.version} / ${c.sales}`)
+                  .join("\n")
+              : row.sales.join("、"),
+            {
+              exact: "完全满足",
+              partial: "部分满足",
+              no_match: "不满足",
+              unknown: "待确认",
+            }[row.level],
+            row.ok.join("\n"),
+            [...row.hard, ...row.no].join("\n"),
+            row.note,
+            assessmentEvidence(row)
+              .map((e) => e.quote)
+              .join("\n"),
+            assessmentEvidence(row)
+              .map(
+                (e) =>
+                  `${pages.find((p) => p.id === e.snapshotId)?.path ?? e.snapshotId}:L${e.lineStart}-L${e.lineEnd}`,
+              )
+              .join("\n"),
+            row.source === "human"
+              ? "人工确认"
+              : row.reviewed
+                ? "AI 自检"
+                : "待自检",
+          ].map(safeCell),
+        );
+      }
+      styleTable(
+        sheet,
+        [12, 20, 60, 26, 16, 42, 14, 40, 40, 45, 55, 45, 16],
+        7,
+      );
+    } else {
+      if (kind === "full") addOverview(book, snapshot, sales.length);
+      const sheet = book.addWorksheet("功能点匹配报告", {
+        views: [{ state: "frozen", ySplit: 1 }],
+      });
+      sheet.addRow(headers);
+      details.forEach((row) => sheet.addRow(row.map(safeCell)));
+      styleTable(
+        sheet,
+        [12, 18, 52, 30, 58, 14, 30, 30, 30, 48, 40, 80, 18, 40],
+        6,
+      );
+      const salesSheet = book.addWorksheet("销售项清单", {
+        views: [{ state: "frozen", ySplit: 1 }],
+      });
+      salesSheet.addRow(salesHeaders);
+      saleRows.forEach((row) =>
+        salesSheet.addRow(
+          row.map((value) =>
+            value === ""
+              ? null
+              : typeof value === "number"
+                ? value
+                : safeCell(value),
+          ),
+        ),
+      );
+      if (kind === "full") addSalesDetails(book, sales, salesSheet);
+      styleTable(salesSheet, [9, 30, 26, 28, 58, 9, 11, 15, 17, 58]);
+      for (const column of [7, 8, 9])
+        salesSheet.getColumn(column).numFmt =
+          column === 7 ? "#,##0.##" : "#,##0.00";
+      const purchasing = book.addWorksheet("采购核定事项");
+      purchasing.addRow(["类型", "核定事项"]);
+      purchasing.addRow([
+        "清单状态",
+        preliminary
+          ? "初评／待复核，不作为最终采购或报价依据"
+          : procurement.issues.length
+            ? "待核实参考清单，不作为最终采购或报价依据"
+            : "已通过实体与依赖核对，数量与授权范围仍需销售核定",
+      ]);
+      procurement.issues.forEach((issue) =>
+        purchasing.addRow(["待确认", issue]),
+      );
+      procurement.reused.forEach((r) =>
+        purchasing.addRow([
+          "组件复用",
+          `${r.requirementId} · ${r.product} ${r.version} / ${r.sales} → ${r.source}；${r.reason}`,
+        ]),
+      );
+      styleTable(purchasing, [18, 110]);
+      const provenance = book.addWorksheet("证据与版本");
+      provenance.addRow(["报告 ID", id]);
+      provenance.addRow(["知识库项目", project.wiki_project_id]);
+      provenance.addRow(["生成时间", manifest.generatedAt]);
       provenance.addRow([
-        s.title,
-        `${s.product} ${s.version} / ${s.moduleId}`,
-        `${s.requirements.join("、")} / ${s.snapshotId}`,
-      ]),
-    );
-    styleTable(provenance, [36, 64, 64]);
-    if (kind === "sales") book.removeWorksheet(sheet.id);
+        "产品选型版本",
+        snapshot.scope.revision,
+        snapshot.scope.status,
+      ]);
+      provenance.addRow([
+        "所选产品",
+        snapshot.scope.selected.map((p) => `${p.name} ${p.version}`).join("、"),
+      ]);
+      provenance.addRow(["售前策略", snapshot.scope.strategy]);
+      for (const d of snapshot.sourceCoverage ?? []) {
+        provenance.addRow([
+          "原文覆盖",
+          d.name,
+          `${coverageLabel(d.status)}；未检查行 ${d.uncheckedLines.join("、")}`,
+        ]);
+        for (const entry of d.entries)
+          provenance.addRow([
+            entry.id,
+            `L${entry.lineStart}-L${entry.lineEnd} ${entry.status}`,
+            `${entry.reason}；关联 ${entry.requirementIds.join("、")} / ${entry.subrequirementIds.join("、")}`,
+          ]);
+      }
+      provenance.addRow(["条款", "结果版本", "结论来源"]);
+      manifest.requirements.forEach((r) =>
+        provenance.addRow([r.id, r.revision, r.source]),
+      );
+      manifest.evidence.forEach((p) =>
+        provenance.addRow([p.id, p.path, p.hash]),
+      );
+      provenance.addRow(["销售项", "产品版本 / 模块 ID", "关联条款 / 快照"]);
+      manifest.sales.forEach((s) =>
+        provenance.addRow([
+          s.title,
+          `${s.product} ${s.version} / ${s.moduleId}`,
+          `${s.requirements.join("、")} / ${s.snapshotId}`,
+        ]),
+      );
+      styleTable(provenance, [36, 64, 64]);
+      if (kind === "sales") book.removeWorksheet(sheet.id);
+    }
     buffer = Buffer.from(await book.xlsx.writeBuffer());
   } else if (format === "csv") {
     buffer = Buffer.from(

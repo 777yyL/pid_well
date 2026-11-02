@@ -696,7 +696,7 @@ export function routes(
     const { format, kind, stage } = z
       .object({
         format: z.enum(["xlsx", "csv", "html"]),
-        kind: z.enum(["full", "sales"]).default("full"),
+        kind: z.enum(["full", "sales", "matches"]).default("full"),
         stage: z.enum(["formal", "preliminary"]).default("formal"),
       })
       .parse(request.body);

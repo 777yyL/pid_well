@@ -25,7 +25,6 @@ import {
   App as AntApp,
   Alert,
   Collapse,
-  Dropdown,
   Tooltip,
 } from "antd";
 import {
@@ -214,18 +213,15 @@ export function Workpane({
   function showRequirement(item: Requirement) {
     void openDocument(item.documentId, item.lineStart, item.lineEnd);
   }
-  async function exportReport(
-    format: string,
-    stage: "formal" | "preliminary" = "formal",
-  ) {
+  async function exportReport(kind: "sales" | "matches") {
     setBusy(true);
     try {
       const result = await post<{ id: string }>(
         `/projects/${workspace.project.id}/reports`,
         {
-          format: format === "sales" ? "xlsx" : format,
-          kind: format === "sales" ? "sales" : "full",
-          stage,
+          format: "xlsx",
+          kind,
+          stage: complete ? "formal" : "preliminary",
         },
       );
       window.location.assign(`/api/artifacts/${result.id}`);
@@ -609,64 +605,33 @@ export function Workpane({
           ),
         }}
       />
-      <div className="export-bar">
+      <div className="export-bar" data-guide="export">
         <div>
-          <b>初评结果 · 待复核</b>
-          <small>先查看已保存结果；未匹配及未复核条款会明确标出</small>
+          <b>导出成果</b>
+          <small>
+            {complete
+              ? "已完成匹配与复核 · Excel 文件"
+              : "导出当前已保存结果，文件中标注待复核及未完成条款"}
+          </small>
         </div>
-        <Dropdown
-          disabled={!workspace.assessments.length || busy}
-          menu={{
-            items: ["xlsx", "sales", "html", "csv"].map((format) => ({
-              key: format,
-              label:
-                format === "sales"
-                  ? "初评销售项清单 XLSX"
-                  : `初评报告 ${format.toUpperCase()}`,
-            })),
-            onClick: ({ key }) => void exportReport(key, "preliminary"),
-          }}
-        >
+        <Space wrap>
           <Button
             icon={<DownloadOutlined />}
             disabled={!workspace.assessments.length || busy}
-          >
-            导出初评
-          </Button>
-        </Dropdown>
-      </div>
-      <div className="export-bar" data-guide="export">
-        <div>
-          <b>正式评估报告</b>
-          <small>
-            {complete
-              ? "所有条款已完成匹配与复核"
-              : "全部条款确认、匹配并复核后可导出"}
-          </small>
-        </div>
-        <Dropdown
-          menu={{
-            items: ["sales", "xlsx", "csv", "html"].map((format) => ({
-              key: format,
-              label:
-                format === "sales"
-                  ? "销售项清单 · SPS 模板 XLSX"
-                  : format === "xlsx"
-                    ? "完整报告 · 含销售清单 XLSX"
-                    : format.toUpperCase(),
-            })),
-            onClick: ({ key }) => void exportReport(key),
-          }}
-          disabled={!complete || busy}
-        >
-          <Button
-            icon={<DownloadOutlined />}
             loading={busy}
-            disabled={!complete}
+            onClick={() => void exportReport("sales")}
           >
-            导出报告
+            销售项清单
           </Button>
-        </Dropdown>
+          <Button
+            type="primary"
+            icon={<DownloadOutlined />}
+            disabled={!workspace.assessments.length || busy}
+            onClick={() => void exportReport("matches")}
+          >
+            条款匹配记录
+          </Button>
+        </Space>
       </div>
       <div className="share-entry" data-guide="share">
         <ShareDialog

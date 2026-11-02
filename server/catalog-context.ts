@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Database } from "./db.js";
 import { readCatalogPage } from "./product-search.js";
 import { parseSaleEntity } from "./sale-entity.js";
+import { audit } from "./db.js";
 import type { RequirementInput } from "../shared/domain.js";
 import type { QuickPacket } from "./quick-assessment.js";
 
@@ -20,6 +21,7 @@ export async function loadCatalogContext(
   runId: string,
   signal?: AbortSignal,
 ) {
+  const started = Date.now();
   const catalog = await readCatalogPage(
     db,
     projectId,
@@ -47,8 +49,9 @@ export async function loadCatalogContext(
     capabilities: string;
     moduleId: string;
   }[] = [];
+  const byId = new Map(pages.map((p) => [p.id, p]));
   for (const item of catalog.items) {
-    const page = pages.find((p) => p.id === item.snapshotId);
+    const page = byId.get(item.snapshotId);
     if (!page) throw new Error("产品目录实体快照缺失");
     const entity = parseSaleEntity(page.content);
     for (const owner of item.products) {
@@ -87,6 +90,13 @@ export async function loadCatalogContext(
   }
   if (!index.length)
     throw new Error("所选产品版本没有可用销售项目录，不能据此判定需求不支持");
+  await audit(db, projectId, null, runId, "catalog_context_prepared", {
+    scopeRevision: catalog.scopeRevision,
+    elapsedMs: Date.now() - started,
+    entities: pages.length,
+    entries: index.length,
+    contentChars: pages.reduce((sum, p) => sum + p.content.length, 0),
+  });
   return { scopeRevision: catalog.scopeRevision, index, candidates };
 }
 

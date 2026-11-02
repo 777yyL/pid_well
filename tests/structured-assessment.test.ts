@@ -293,7 +293,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       true,
     );
     WikiClient.prototype.search = searchBeforeCatalog;
-    assert.equal(selectionCalls, 1, "一批需求共用一次全目录候选选择");
+    assert.equal(selectionCalls, 0, "上下文足够时直接判断，不调用候选选择模型");
     const indexTool = tools.find((t) => t.name === "assessment_catalog")!;
     const indexResponse = await indexTool.execute("catalog-test", {});
     const index = JSON.parse(
@@ -368,6 +368,50 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       "重试成功后仍保留失败详情",
     );
     await db.query(
+      "DELETE FROM assessments WHERE project_id=$1 AND requirement_id='T-2'",
+      [pid],
+    );
+    let uncertainJudgments = 0;
+    let rechecks = 0;
+    await runQuickAssessment(
+      db,
+      pid,
+      rid,
+      new AbortController().signal,
+      async (packets) => {
+        uncertainJudgments++;
+        const result = JSON.parse(await judge(packets));
+        for (const value of result.assessments) {
+          value.selections.forEach((s: { purpose: string }) => {
+            s.purpose = "candidate";
+          });
+          value.checks.forEach((c: { level: string; reason: string }) => {
+            c.level = "unknown";
+            c.reason = "资料未覆盖完整能力，保留待确认";
+          });
+        }
+        return result;
+      },
+      async () => {},
+      60000,
+      async (requirements, catalog) => {
+        rechecks++;
+        return {
+          selections: requirements.map((r) => ({
+            requirementId: r.id,
+            catalogIds: [catalog.find((s) => s.sales === "视频监控")!.id],
+          })),
+        };
+      },
+    );
+    assert.equal(rechecks, 0, "已提供完整目录全文，不重复调用目录选择模型");
+    assert.equal(uncertainJudgments, 1, "复查未新增候选不重复调用判断模型");
+    assert.equal(
+      (await assessmentRows(db, pid)).find((r) => r.requirementId === "T-2")
+        ?.level,
+      "unknown",
+    );
+    await db.query(
       "UPDATE assessments SET source='human',reviewed=true WHERE project_id=$1 AND requirement_id='T-1'",
       [pid],
     );
@@ -396,6 +440,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       1,
       "failed batch must not erase saved results",
     );
+    const callsBeforeResume = modelCalls;
     await runQuickAssessment(
       db,
       pid,
@@ -404,7 +449,11 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       judge,
       async () => {},
     );
-    assert.equal(modelCalls, 4, "only unsaved clause rejudged");
+    assert.equal(
+      modelCalls,
+      callsBeforeResume + 1,
+      "only unsaved clause rejudged",
+    );
     assert.equal(
       (await assessmentRows(db, pid)).find((r) => r.requirementId === "T-1")
         ?.source,
@@ -419,7 +468,11 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
     await assert.rejects(
       runQuickAssessment(db, pid, rid, cancelled.signal, judge, async () => {}),
     );
-    assert.equal(modelCalls, 4, "cancel must not call model");
+    assert.equal(
+      modelCalls,
+      callsBeforeResume + 1,
+      "cancel must not call model",
+    );
     await db.query("DELETE FROM assessments WHERE project_id=$1", [pid]);
     const result = await searchSelected(
       db,
@@ -561,8 +614,41 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       hit.snapshotId,
       content,
     ]);
-    await saveAssessments(db, pid, [item], {});
+    const formattingInput = structuredClone(item);
+    for (const e of [
+      ...formattingInput.evidence,
+      ...formattingInput.verification!.checks.flatMap((c) => c.evidence),
+      ...formattingInput.verification!.contributions.flatMap((c) => c.evidence),
+    ]) {
+      e.lineStart = 9999;
+      e.lineEnd = 9999;
+    }
+    const contribution = formattingInput.verification!.contributions[0];
+    (contribution as unknown as Record<string, unknown>).sales = [
+      contribution.sales,
+    ];
+    formattingInput.sales = [];
+    formattingInput.selfReview = {
+      completed: true,
+      checks: formattingInput.criteria,
+      reason: "已核对完整原文及实时预览证据，无额外参数和集成条件",
+    };
+    await tools
+      .find((t) => t.name === "save_assessments")!
+      .execute("normalize-save", { assessments: [formattingInput] });
     const saved = (await assessmentRows(db, pid, 10, 0))[0];
+    assert.deepEqual(saved.sales, ["视频监控"]);
+    assert.equal(saved.evidence[0].lineStart, line);
+    assert.equal(saved.verification?.checks[0].evidence[0].lineStart, line);
+    assert.equal(saved.verification?.contributions[0].sales, "视频监控");
+    assert.equal(saved.reviewed, true);
+    assert.deepEqual(saved.reviewRisks, []);
+    await saveAssessments(db, pid, [item], {});
+    assert.equal(
+      (await assessmentRows(db, pid, 10, 0))[0].reviewed,
+      false,
+      "新版本没有显式自检时不可沿用旧标记",
+    );
     assert.equal(saved.knowledgeReleaseId, releaseId);
     assert.equal(saved.verification?.contributions[0].saleItemId, "s1");
     const wrong = structuredClone(item);

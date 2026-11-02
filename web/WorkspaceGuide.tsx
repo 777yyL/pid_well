@@ -96,7 +96,7 @@ const guides: Record<GuidePhase, Step[]> = {
     {
       title: "导出评估报告和销售清单",
       description:
-        "从导出菜单选择完整报告或 SPS 销售项清单。下载后核对交付范围及授权、数量等商务信息。",
+        "点击销售项清单或条款匹配记录即可下载 Excel。系统自动标注待复核状态，下载后核对交付范围及授权、数量等信息。",
       target: "export",
       tab: "results",
     },

@@ -7,6 +7,7 @@ import { AppError } from "./errors.js";
 import {
   WikiClient,
   snapshotPage,
+  snapshotPages,
   wikiFilePaths,
   PRODUCT_OVERVIEW_PATH,
 } from "./wiki.js";
@@ -278,22 +279,37 @@ export async function readCatalogPage(
   const { wiki, wikiId } = await boundWiki(db, projectId, signal);
   const items = [];
   const release = await projectKnowledge(db, projectId);
-  let loaded = offset;
-  for (const path of paths.slice(offset, offset + count)) {
+  const requested = paths.slice(offset, offset + count);
+  const cachedPages = requested.length
+    ? await db.query<Page>(
+        "SELECT DISTINCT ON (path) id,path,content FROM snapshots WHERE project_id=$1 AND path=ANY($2::text[]) ORDER BY path,created_at DESC",
+        [projectId, requested],
+      )
+    : [];
+  const byPath = new Map(cachedPages.map((page) => [page.path, page]));
+  const missingPages: { path: string; content: string }[] = [];
+  // Wiki reads are bounded; structured release content needs no external requests.
+  const missingPaths = requested.filter((path) => !byPath.has(path));
+  for (let start = 0; start < missingPaths.length; start += 4) {
     signal?.throwIfAborted();
-    const [cached] = await db.query<Page>(
-      "SELECT id,path,content FROM snapshots WHERE project_id=$1 AND path=$2 ORDER BY created_at DESC LIMIT 1",
-      [projectId, path],
+    missingPages.push(
+      ...(await Promise.all(
+        missingPaths.slice(start, start + 4).map(async (path) => ({
+          path,
+          content:
+            (release ? knowledgeContent(release, path) : undefined) ??
+            (await wiki.read(wikiId, path)),
+        })),
+      )),
     );
-    const page =
-      cached ??
-      (await snapshotPage(
-        db,
-        projectId,
-        path,
-        (release ? knowledgeContent(release, path) : undefined) ??
-          (await wiki.read(wikiId, path)),
-      ));
+  }
+  for (const page of await snapshotPages(db, projectId, missingPages))
+    byPath.set(page.path, page);
+  const readEvents: Record<string, unknown>[] = [];
+  let loaded = offset;
+  for (const path of requested) {
+    signal?.throwIfAborted();
+    const page = byPath.get(path)!;
     const owners = catalog.products.filter(
       (p) => p.paths.includes(path) && belongs(page, p.choice),
     );
@@ -308,13 +324,18 @@ export async function readCatalogPage(
       });
     }
     await onProgress?.({ path, loaded: ++loaded, total: paths.length });
-    await audit(db, projectId, null, runId, "catalog_page_read", {
+    readEvents.push({
       scopeRevision: catalog.scopeRevision,
       path,
       snapshotId: page.id,
       sale: !!owners.length,
     });
   }
+  if (readEvents.length)
+    await db.query(
+      "INSERT INTO audit_log(project_id,run_id,action,data) SELECT $1,$2,'catalog_page_read',value FROM jsonb_array_elements($3::jsonb)",
+      [projectId, runId, JSON.stringify(readEvents)],
+    );
   const seen = await db.query<{ path: string }>(
     "SELECT DISTINCT data->>'path' AS path FROM audit_log WHERE project_id=$1 AND action='catalog_page_read' AND (data->>'scopeRevision')::int=$2",
     [projectId, catalog.scopeRevision],

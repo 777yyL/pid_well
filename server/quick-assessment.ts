@@ -11,6 +11,7 @@ import {
   type AssessmentInput,
   type ProductScope,
   verificationSchema,
+  assessmentSchema,
 } from "../shared/domain.js";
 import { aggregateVerdict } from "../shared/accuracy.js";
 import type { Database } from "./db.js";
@@ -45,6 +46,19 @@ export interface QuickPacket {
   }[];
   searches: { subrequirementId: string; query: string; traceId: number }[];
 }
+// Send each immutable entity body once per request, even when many clauses use it.
+export function judgmentPayload(packets: QuickPacket[]) {
+  const evidence = Object.fromEntries(
+    packets.flatMap((p) => p.candidates.map((c) => [c.snapshotId, c.excerpts])),
+  );
+  return {
+    requirements: packets.map((p) => ({
+      ...p,
+      candidates: p.candidates.map(({ excerpts, ...candidate }) => candidate),
+    })),
+    evidence,
+  };
+}
 const proof = z.object({
   candidateIndex: z.number().int().nonnegative(),
   lineStart: z.number().int().positive(),
@@ -52,6 +66,7 @@ const proof = z.object({
   quote: z.string().min(1),
 });
 const judgment = z.object({
+  selfReview: assessmentSchema.shape.selfReview,
   requirementId: z.string(),
   selections: z.array(
     z.object({
@@ -106,7 +121,7 @@ export function parseQuickJudgments(raw: unknown, expected: string[]) {
 export function planQuickBatches(packets: QuickPacket[], budget: number) {
   const batches: QuickPacket[][] = [];
   for (const p of packets) {
-    if (JSON.stringify(p).length > budget)
+    if (JSON.stringify(judgmentPayload([p])).length > budget)
       throw new Error(
         `条款 ${p.requirement.id} 超过单批上下文预算，请使用深度评估`,
       );
@@ -114,7 +129,7 @@ export function planQuickBatches(packets: QuickPacket[], budget: number) {
     if (
       !last ||
       last.length >= 5 ||
-      JSON.stringify([...last, p]).length > budget
+      JSON.stringify(judgmentPayload([...last, p])).length > budget
     )
       batches.push([p]);
     else last.push(p);
@@ -172,6 +187,7 @@ export function buildQuickAssessment(
   );
   const pending = "快速初评，未经独立复核，需人工核对";
   const item: AssessmentInput = {
+    selfReview: value.selfReview,
     requirementId: packet.requirement.id,
     product: primary.name,
     version: primary.version,
@@ -182,7 +198,9 @@ export function buildQuickAssessment(
     ok: checks.filter((c) => c.level === "exact").map((c) => c.reason),
     hard: checks.filter((c) => c.level === "partial").map((c) => c.reason),
     no: checks.filter((c) => c.level === "no_match").map((c) => c.reason),
-    note: pending,
+    note: value.selfReview?.completed
+      ? "首次判断已包含AI自检；存在专项风险的条款仍需复核，未经独立或人工复核"
+      : pending,
     criteria: {
       direction: checks.map((c) => c.direction).join("；"),
       scope: "已确认产品版本范围内",
@@ -217,11 +235,11 @@ export function buildQuickAssessment(
             : [];
         }),
       counterchecks: {
-        direction: pending,
-        omissions: pending,
-        quantitative: pending,
-        external: pending,
-        integration: pending,
+        direction: value.selfReview?.checks.direction ?? pending,
+        omissions: value.selfReview?.checks.scope ?? pending,
+        quantitative: value.selfReview?.checks.spec ?? pending,
+        external: value.selfReview?.checks.delivery ?? pending,
+        integration: value.selfReview?.checks.context ?? pending,
       },
     },
   };
@@ -381,7 +399,7 @@ export async function runQuickAssessment(
     } finally {
       await audit(db, projectId, null, runId, "quick_model_request", {
         requirementIds: batch.map((p) => p.requirement.id),
-        inputChars: JSON.stringify(batch).length,
+        inputChars: JSON.stringify(judgmentPayload(batch)).length,
         elapsedMs: Date.now() - at,
         ok,
         error: errorMessage.slice(0, 2000),
@@ -420,6 +438,7 @@ export async function runQuickAssessment(
       ? await loadCatalogContext(db, projectId, runId, signal)
       : undefined;
   const selectedBatches = new Map<number, Promise<QuickPacket[]>>();
+  const directRequirements = new Set<string>();
   const prepared =
     pending.length && !context
       ? await prepareSelectedSearch(db, projectId, runId, signal)
@@ -440,15 +459,27 @@ export async function runQuickAssessment(
           const batchIndex = Math.floor(pending.indexOf(row) / 5);
           let selection = selectedBatches.get(batchIndex);
           if (!selection) {
-            selection = selectCatalogPackets(
-              context,
-              pending
-                .slice(batchIndex * 5, batchIndex * 5 + 5)
-                .map((r) => r.data),
-              select,
-              pipelineSignal,
-              budget,
-            );
+            const requirements = pending
+              .slice(batchIndex * 5, batchIndex * 5 + 5)
+              .map((r) => r.data);
+            const direct = requirements.map((requirement) => ({
+              requirement,
+              candidates: context.candidates,
+              searches: [],
+            }));
+            if (JSON.stringify(judgmentPayload(direct)).length <= budget) {
+              requirements.forEach((r) => directRequirements.add(r.id));
+              selection = Promise.resolve(direct);
+            } else
+              selection = selectCatalogPackets(
+                context,
+                pending
+                  .slice(batchIndex * 5, batchIndex * 5 + 5)
+                  .map((r) => r.data),
+                select,
+                pipelineSignal,
+                budget,
+              );
             selectedBatches.set(batchIndex, selection);
           }
           const packet = (await selection).find(
@@ -459,7 +490,9 @@ export async function runQuickAssessment(
             query: row.data.raw,
             scopeRevision: context.scopeRevision,
             matchCount: packet.candidates.length,
-            mode: "catalog_model",
+            mode: directRequirements.has(row.data.id)
+              ? "catalog_direct"
+              : "catalog_model",
             catalogSize: context.index.length,
           });
           counters.retrieved++;
@@ -555,10 +588,12 @@ export async function runQuickAssessment(
             counters.judged = judged.size;
             await progress("judging", batchMessage);
             if (attempt === 0 && context && select) {
-              const unresolved = result.filter((value) =>
-                value.checks.some(
-                  (c) => c.level === "unknown" || c.level === "no_match",
-                ),
+              const unresolved = result.filter(
+                (value) =>
+                  !directRequirements.has(value.requirementId) &&
+                  value.checks.some(
+                    (c) => c.level === "unknown" || c.level === "no_match",
+                  ),
               );
               if (unresolved.length) {
                 currentStage = "产品内全量复查";
@@ -579,6 +614,7 @@ export async function runQuickAssessment(
                   budget,
                   `首次判断存在缺口，请再次检查全部目录，寻找遗漏或组合销售项。${JSON.stringify(unresolved.map((v) => ({ requirementId: v.requirementId, checks: v.checks.map((c) => ({ reason: c.reason, level: c.level })) })))}`,
                 );
+                const changed = new Set<string>();
                 for (const packet of extra) {
                   const target = batch.find(
                     (p) => p.requirement.id === packet.requirement.id,
@@ -589,11 +625,26 @@ export async function runQuickAssessment(
                         (other) =>
                           other.path === c.path && other.product === c.product,
                       )
-                    )
+                    ) {
                       target.candidates.push(c);
+                      changed.add(packet.requirement.id);
+                    }
                 }
-                result = [];
-                for (const part of planQuickBatches(batch, budget))
+                const retained = result.filter(
+                  (v) => !changed.has(v.requirementId),
+                );
+                await audit(db, projectId, null, runId, "catalog_recheck", {
+                  requirementIds: unresolved.map((v) => v.requirementId),
+                  changed: [...changed],
+                  skippedJudgments: unresolved
+                    .filter((v) => !changed.has(v.requirementId))
+                    .map((v) => v.requirementId),
+                });
+                result = retained;
+                for (const part of planQuickBatches(
+                  batch.filter((p) => changed.has(p.requirement.id)),
+                  budget,
+                ))
                   result.push(
                     ...parseQuickJudgments(
                       await invokeJudge(
@@ -698,7 +749,7 @@ export async function runQuickAssessment(
                 }
               }
               if (supplemented) {
-                if (JSON.stringify(batch).length > budget)
+                if (JSON.stringify(judgmentPayload(batch)).length > budget)
                   throw new Error("补查证据超过批次预算，请使用深度评估");
                 currentStage = "补查后判断";
                 batchStage = "judging";

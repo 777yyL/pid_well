@@ -7,6 +7,7 @@ import {
   buildQuickAssessment,
   parseQuickJudgments,
   planQuickBatches,
+  judgmentPayload,
   type QuickPacket,
 } from "../server/quick-assessment.js";
 
@@ -41,6 +42,35 @@ const packet = (): QuickPacket => ({
     },
   ],
   searches: [{ subrequirementId: "T-1.1", query: "反潜回", traceId: 1 }],
+});
+
+test("同批需求共享实体正文，保留每条候选顺序和不同快照", () => {
+  const first = packet();
+  first.candidates[0].excerpts[0].quote = "支持跨控制器反潜回".repeat(2000);
+  const second = structuredClone(first);
+  second.requirement.id = "T-2";
+  const payload = judgmentPayload([first, second]);
+  assert.equal(Object.keys(payload.evidence).length, 1);
+  assert.equal(
+    payload.requirements[1].candidates[0].snapshotId,
+    first.candidates[0].snapshotId,
+  );
+  assert(
+    JSON.stringify(payload).length <
+      JSON.stringify([first, second]).length * 0.7,
+  );
+  const budget = JSON.stringify(payload).length + 10;
+  assert.equal(planQuickBatches([first, second], budget).length, 1);
+  second.candidates[0].snapshotId = randomUUID();
+  assert.equal(
+    Object.keys(judgmentPayload([first, second]).evidence).length,
+    2,
+  );
+  assert.equal(
+    first.candidates[0].excerpts.length,
+    1,
+    "序列化不能修改原始证据",
+  );
 });
 test("模型未知实测值可返回 null，转换后仍为未知且满足保存类型约束", () => {
   const item = {

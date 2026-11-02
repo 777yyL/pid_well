@@ -172,24 +172,18 @@ export function SharedResult({ token }: { token: string }) {
           </p>
         </div>
         <div className="shared-downloads">
-          {result.files.map((file) => (
-            <Button
-              type={
-                file.kind === "full" && file.format === "xlsx"
-                  ? "primary"
-                  : "default"
-              }
-              key={file.id}
-              href={download(file.id)}
-              icon={<DownloadOutlined />}
-            >
-              {file.kind === "sales"
-                ? "下载销售项清单"
-                : file.format === "xlsx"
-                  ? "下载评估报告"
-                  : "下载网页版报告"}
-            </Button>
-          ))}
+          {result.files
+            .filter((file) => file.format === "xlsx")
+            .map((file) => (
+              <Button
+                type={file.kind !== "sales" ? "primary" : "default"}
+                key={file.id}
+                href={download(file.id)}
+                icon={<DownloadOutlined />}
+              >
+                {file.kind === "sales" ? "下载销售项清单" : "下载条款匹配记录"}
+              </Button>
+            ))}
         </div>
       </header>
       <section className="shared-stats">

@@ -167,3 +167,45 @@ export async function snapshotPage(
   );
   return snapshot;
 }
+
+export async function snapshotPages(
+  db: Database,
+  projectId: string,
+  pages: { path: string; content: string }[],
+) {
+  if (!pages.length) return [];
+  const values = [
+    ...new Map(
+      pages.map((page) => {
+        const hash = createHash("sha256").update(page.content).digest("hex");
+        const front = page.content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        const meta = front ? parseYaml(front[1]) : null;
+        const kind =
+          page.path === PRODUCT_OVERVIEW_PATH
+            ? "overview"
+            : meta?.type === "product" ||
+                meta?.tags?.includes("product") ||
+                page.path.includes("/products/")
+              ? "product"
+              : "page";
+        return [
+          JSON.stringify([page.path, hash]),
+          { ...page, hash, kind, id: randomUUID(), project_id: projectId },
+        ] as const;
+      }),
+    ).values(),
+  ];
+  return db.query<{
+    id: string;
+    path: string;
+    content: string;
+    hash: string;
+    kind: string;
+  }>(
+    `INSERT INTO snapshots(id,project_id,path,content,hash,kind)
+     SELECT id,project_id,path,content,hash,kind FROM jsonb_to_recordset($1::jsonb)
+       AS x(id uuid,project_id uuid,path text,content text,hash text,kind text)
+     ON CONFLICT(project_id,path,hash) DO UPDATE SET hash=EXCLUDED.hash RETURNING *`,
+    [JSON.stringify(values)],
+  );
+}

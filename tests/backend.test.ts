@@ -802,6 +802,39 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         null,
       );
       assert.equal(standaloneBook.worksheets[0].columnCount, 10);
+      const matched = await request(
+        "POST",
+        `/api/projects/${projectId}/reports`,
+        { format: "xlsx", kind: "matches" },
+      );
+      assert.equal(matched.statusCode, 200, matched.body);
+      assert.match(matched.json().name, /条款匹配记录/);
+      const [matchRecord] = await db.query<{ storage_name: string }>(
+        "SELECT storage_name FROM artifacts WHERE id=$1",
+        [matched.json().id],
+      );
+      const matchBook = new ExcelJS.Workbook();
+      await matchBook.xlsx.readFile(
+        resolve(config.dataDir, "artifacts", matchRecord.storage_name),
+      );
+      assert.deepEqual(
+        matchBook.worksheets.map((sheet) => sheet.name),
+        ["条款匹配记录"],
+      );
+      assert.equal(matchBook.worksheets[0].getRow(2).getCell(1).value, "T-1");
+      assert.equal(matchBook.worksheets[0].getRow(2).getCell(3).value, raw);
+      assert.equal(
+        matchBook.worksheets[0].getRow(2).getCell(4).value,
+        item.product,
+      );
+      assert.equal(
+        matchBook.worksheets[0].getRow(2).getCell(7).value,
+        "完全满足",
+      );
+      assert.equal(
+        matchBook.worksheets[0].getRow(2).getCell(13).value,
+        "人工确认",
+      );
       assert.equal(safeCell('=HYPERLINK("evil")'), '\'=HYPERLINK("evil")');
       const html = await createReport(db, projectId, "html");
       assert.equal((await request("GET", html.url)).statusCode, 200);
@@ -841,7 +874,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         publicPending.json().procurementIssues.join("\n"),
         /尚未列入的必选基础包/,
       );
-      assert.equal(publicPending.json().files.length, 3);
+      assert.equal(publicPending.json().files.length, 2);
       await saveAssessments(db, projectId, [item], { human: true });
     },
   );
@@ -874,7 +907,11 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       assert.equal(opened.statusCode, 200, opened.body);
       assert.equal(opened.headers["referrer-policy"], "no-referrer");
       const frozen = opened.json();
-      assert.equal(frozen.files.length, 3);
+      assert.equal(frozen.files.length, 2);
+      assert.deepEqual(
+        frozen.files.map((file: { kind: string }) => file.kind).sort(),
+        ["matches", "sales"],
+      );
       assert.equal(frozen.rows[0].note, expectedNote);
       for (const secret of [
         "modelApiKey",
@@ -932,7 +969,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       );
       const reportFile = frozen.files.find(
         (file: { kind: string; format: string }) =>
-          file.kind === "full" && file.format === "xlsx",
+          file.kind === "matches" && file.format === "xlsx",
       );
       const downloaded = await app.inject({
         url: `${publicUrl}/artifacts/${reportFile.id}`,
@@ -944,7 +981,7 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         >[0],
       );
       assert.equal(
-        workbook.getWorksheet("功能点匹配报告")!.getRow(2).getCell(10).value,
+        workbook.getWorksheet("条款匹配记录")!.getRow(2).getCell(10).value,
         frozen.rows[0].note,
       );
       await saveAssessments(db, projectId, [before], { human: true });
@@ -1228,10 +1265,10 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
     requireRequirementConfirmation: true,
   });
   assert.equal(saved.statusCode, 200, saved.body);
-  const [stored] = await db.query<{ value: { profiles: {modelApiKey:string}[] } }>(
-    "SELECT value FROM user_agent_settings LIMIT 1",
-  );
-  assert(stored.value.profiles.some(p=>!!p.modelApiKey));
+  const [stored] = await db.query<{
+    value: { profiles: { modelApiKey: string }[] };
+  }>("SELECT value FROM user_agent_settings LIMIT 1");
+  assert(stored.value.profiles.some((p) => !!p.modelApiKey));
   assert(!JSON.stringify(stored.value).includes("test-secret-key"));
   assert(!saved.body.includes("test-secret-key"));
   await runner.start();

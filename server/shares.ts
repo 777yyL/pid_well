@@ -57,9 +57,8 @@ export function shareRoutes(app: FastifyInstance, db: Database) {
     const procurement = summarizeSales(frozen.rows, frozen.pages);
     const files = [];
     for (const [format, kind] of [
-      ["xlsx", "full"],
+      ["xlsx", "matches"],
       ["xlsx", "sales"],
-      ["html", "full"],
     ] as const) {
       const file = await createReport(db, id, format, kind, frozen);
       files.push({ id: file.id, name: file.name, kind, format });

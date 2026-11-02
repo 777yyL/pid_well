@@ -7,6 +7,7 @@ import { audit } from "./db.js";
 import {
   requirementSchema,
   assessmentSchema,
+  verificationSchema,
   criteriaSchema,
   productCandidateSchema,
   productCombinationSchema,
@@ -245,7 +246,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             [projectId, runId],
           ),
           searchWorkflow:
-            "确认产品后优先 wiki_search_batch 按模块批量检索（每批最多5个子要求），或 wiki_search 单条检索；自动从产品页建立范围、按需读取实体，不必先遍历 wiki_product_catalog。返回的快照片段可直接核实引用，不足再 wiki_read；未命中或证据不足才能 wiki_global_search。范围外结果 record_product_alternative，等待用户加入范围。",
+            "确认产品后 assessment_catalog 加载完整产品版本目录，assessment_evidence 批量获取候选全文。不要先走旧关键词检索。证据不足先复查目录，无新增候选不重复判断；范围外结果单列建议。首次判断完成selfReview，保存后仅对get_assessments(unreviewed=true)返回的风险项专项复核。",
           alternatives: await db.query(
             "SELECT id,data FROM audit_log WHERE project_id=$1 AND action='product_alternative' ORDER BY id DESC LIMIT 100",
             [projectId],
@@ -355,7 +356,11 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           name: doc.name,
           total: doc.lines.length,
           text: numberedLines(doc.lines, args.start, args.count),
-          requirementView: requirementDocumentView(doc.lines, args.start, args.count),
+          requirementView: requirementDocumentView(
+            doc.lines,
+            args.start,
+            args.count,
+          ),
         };
       },
     ),
@@ -584,15 +589,34 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "save_assessments",
       "保存匹配结果",
-      "保存匹配结果。可按整条原文评估，verification.checks 可仅一个核验项并使用父条款T编号，无需预先登记子要求；复杂条款由Agent自主细分。unknown可直接记录缺口，supplementalSearch可为空，已有真实轨迹按父条款复用。销售项须附实体页快照证据；不覆盖人工结果，保存后尚未自检。",
-      z.object({ assessments: assessmentSchema.array().min(1).max(30) }),
+      "保存匹配结果。可按整条原文评估，无需预先登记子要求。贡献项sales为单个销售项名称，purpose按已确认采购/依赖/候选如实填写；程序据此生成顶层sales。unknown不强制将所有贡献项改为candidate。证据可引用多行，quote须为原文；程序只在同一已读快照内唯一命中时修正行号和空白差异，禁止改写或猜测。无需为修正行号重复读取同一实体。不覆盖人工结果，保存后尚未自检。",
+      z.object({
+        assessments: assessmentSchema
+          .extend({
+            verification: verificationSchema
+              .extend({
+                contributions: z.array(
+                  verificationSchema.shape.contributions.element.extend({
+                    sales: z.union([
+                      z.string().min(1),
+                      z.array(z.string().min(1)).length(1),
+                    ]),
+                  }),
+                ),
+              })
+              .optional(),
+          })
+          .array()
+          .min(1)
+          .max(30),
+      }),
       async (args) =>
         saveAssessments(db, projectId, args.assessments, { runId }),
     ),
     tool(
       "review_assessments",
       "记录逐条复核",
-      "逐条自检依据、原文覆盖及依赖。可直接记录整条checks和reason，points为可选明细，不强制按子要求重填。发现错误先修正，使用实际保存的revision。AI自检不等于人工或独立复核。",
+      "仅复核get_assessments(unreviewed=true)返回的待复核条款，参考reviewRisks聚焦参数、缺口、集成或交付等风险；已完成随判断自检的普通条款无需重复读取。可按整条checks和reason登记，points可省略。发现错误先修正，使用真实revision。AI自检不等于人工或独立复核。",
       z.object({
         reviews: z
           .array(
@@ -698,11 +722,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       "记录项目分析",
       "仅保存与需求理解有关的项目背景、需求边界和风险。当前不分析评分办法和供应商资质。内容应附原文依据，技术需求请用save_requirements。",
       z.object({
-        category: z.enum([
-          "项目背景",
-          "基本要求",
-          "风险说明",
-        ]),
+        category: z.enum(["项目背景", "基本要求", "风险说明"]),
         content: z.string().min(1).max(30000),
       }),
       async (args) => {
@@ -713,11 +733,11 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     ),
     tool(
       "export_report",
-      "生成正式报告",
-      "基于全部已确认、匹配、复核的结果生成评估报告。条款未完成仍拒绝；采购身份、内容版本或配套待确认不阻断报告，返回 manifest.procurementIssues 并输出明确标注的参考清单，禁止称为最终采购配置。同一实体可在多条条款引用不同行。返回可下载链接。",
+      "导出成果",
+      "成果仅提供两份Excel：kind=sales销售项清单、kind=matches条款匹配记录。用户要求导出全部成果时各生成一份，不再生成HTML/CSV或混合完整报告。formal要求全部条款确认、匹配并复核；尚未完成可用preliminary导出已保存结果并明确标注状态。采购待核实不阻断导出，但禁止称为最终采购配置。返回下载链接。",
       z.object({
-        format: z.enum(["xlsx", "csv", "html"]),
-        kind: z.enum(["full", "sales"]).default("full"),
+        format: z.literal("xlsx").default("xlsx"),
+        kind: z.enum(["matches", "sales"]).default("matches"),
         stage: z.enum(["formal", "preliminary"]).default("formal"),
       }),
       async (args) => {

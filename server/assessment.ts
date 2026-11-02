@@ -2,6 +2,12 @@ import { projectKnowledge } from "./structured-knowledge.js";
 import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
+import { canReviewInline, reviewRisks } from "./assessment-review.js";
+import {
+  normalizeAssessmentInput,
+  normalizeAssessmentEvidence,
+  normalizeProcurementNames,
+} from "./assessment-normalization.js";
 import {
   assessmentSchema,
   requirementSchema,
@@ -474,11 +480,35 @@ export async function saveAssessments(
   input: unknown,
   actor: { userId?: string; runId?: string; human?: boolean },
 ) {
-  const items = assessmentSchema.array().min(1).max(100).parse(input);
+  const items = assessmentSchema
+    .array()
+    .min(1)
+    .max(100)
+    .parse(actor.human ? input : normalizeAssessmentInput(input));
   if (new Set(items.map((i) => i.requirementId)).size !== items.length)
     throw new AppError(422, "同一批不能重复写入相同要求");
   const versions: { requirementId: string; revision: number }[] = [];
   await db.transaction(async (tx) => {
+    if (!actor.human) {
+      const ids = [
+        ...new Set(
+          items.flatMap((item) =>
+            assessmentEvidence(item).map((e) => e.snapshotId),
+          ),
+        ),
+      ];
+      const pages = ids.length
+        ? await tx.query<{ id: string; content: string }>(
+            "SELECT id,content FROM snapshots WHERE project_id=$1 AND id=ANY($2::uuid[])",
+            [projectId, ids],
+          )
+        : [];
+      const snapshots = new Map(pages.map((page) => [page.id, page.content]));
+      for (const item of items) {
+        normalizeAssessmentEvidence(item, snapshots);
+        normalizeProcurementNames(item);
+      }
+    }
     const stages = await tx.query<{ kind: string }>(
       "SELECT DISTINCT kind FROM snapshots WHERE project_id=$1",
       [projectId],
@@ -537,13 +567,27 @@ export async function saveAssessments(
           item.requirementId,
           JSON.stringify(item),
           actor.human ? "human" : "agent",
-          !!actor.human,
+          !!actor.human || canReviewInline(item, requirement.data.raw),
         ],
       );
       versions.push({
         requirementId: item.requirementId,
         revision: saved.revision,
       });
+      if (!actor.human && canReviewInline(item, requirement.data.raw))
+        await audit(
+          tx,
+          projectId,
+          null,
+          actor.runId ?? null,
+          "assessment_reviewed",
+          {
+            requirementId: item.requirementId,
+            revision: saved.revision,
+            mode: "inline_ai_self_check",
+            ...item.selfReview,
+          },
+        );
       await audit(
         tx,
         projectId,
@@ -579,5 +623,9 @@ export async function assessmentRows(
     `SELECT a.id,a.data,a.source,a.reviewed,a.revision,r.data->>'raw' AS requirement_raw,r.data->>'module' AS module FROM assessments a JOIN requirements r ON r.project_id=a.project_id AND r.id=a.requirement_id WHERE a.project_id=$1 AND ($4::text[] IS NULL OR a.requirement_id=ANY($4::text[])) AND (NOT $5::boolean OR a.reviewed=false) ORDER BY split_part(a.requirement_id,'-',2)::bigint,a.requirement_id LIMIT $2 OFFSET $3`,
     [projectId, limit, offset, filters.ids ?? null, !!filters.unreviewed],
   );
-  return rows.map(({ data, ...rest }) => ({ ...data, ...rest }));
+  return rows.map(({ data, ...rest }) => ({
+    ...data,
+    ...rest,
+    reviewRisks: reviewRisks(data, rest.requirement_raw),
+  }));
 }

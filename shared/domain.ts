@@ -121,6 +121,13 @@ export const verificationSchema = z.object({
   }),
 });
 export const assessmentSchema = z.object({
+  selfReview: z
+    .object({
+      completed: z.boolean(),
+      checks: criteriaSchema,
+      reason: z.string().min(10),
+    })
+    .optional(),
   productScopeRevision: z.number().int().positive().optional(),
   knowledgeReleaseId: z.string().uuid().optional(),
   requirementId: z.string(),
