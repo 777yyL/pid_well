@@ -133,7 +133,6 @@ export function CapabilitySearch() {
     <section className="capability-page">
       <header className="capability-header">
         <div>
-          <span className="capability-eyebrow">PRODUCT CAPABILITIES</span>
           <h1>能力检索</h1>
           <p>输入功能描述，快速查找对应销售项与所属产品。</p>
         </div>

@@ -98,7 +98,6 @@ export function ProjectManager({
         <section className="project-hub project-hub-page project-index">
           <header className="project-hub-header">
             <div>
-              <span className="project-hub-eyebrow">工作空间 / 项目管理</span>
               <h1>评估项目</h1>
               <p>整理招标需求，跟进评估，交付有据可查的结果。</p>
             </div>

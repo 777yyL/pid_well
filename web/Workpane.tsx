@@ -703,22 +703,26 @@ export function Workpane({
           查看修改记录
         </Button>
       </div>
-      {workspace.findings.length ? (
+      {workspace.findings.some(
+        (f) => !["资质要求", "评分办法"].includes(f.data.category),
+      ) ? (
         <Collapse
-          items={workspace.findings.map((f) => ({
-            key: String(f.id),
-            label: f.data.category,
-            children: (
-              <div className="finding-markdown">
-                <Markdown text={f.data.content} />
-              </div>
-            ),
-          }))}
+          items={workspace.findings
+            .filter((f) => !["资质要求", "评分办法"].includes(f.data.category))
+            .map((f) => ({
+              key: String(f.id),
+              label: f.data.category,
+              children: (
+                <div className="finding-markdown">
+                  <Markdown text={f.data.content} />
+                </div>
+              ),
+            }))}
         />
       ) : (
         <Empty
           image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="建设背景、资质、评分办法和风险分析会保存在这里"
+          description="需求背景、范围边界和待核实事项会保存在这里"
         />
       )}
       {!!workspace.searchTrace?.length && (
@@ -792,7 +796,6 @@ export function Workpane({
     <section className="work-pane">
       <header className="pane-header">
         <div>
-          <span className="eyebrow">PROJECT KNOWLEDGE</span>
           <h2>证据与评估</h2>
         </div>
         <span className="subtle-label">项目内持续积累</span>

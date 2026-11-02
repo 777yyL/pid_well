@@ -1,0 +1,521 @@
+/* Shared product UI: quiet surfaces, readable content, explicit action hierarchy. */
+:root {
+  --ink: #233044;
+  --muted: #56657a;
+  --border: #dce3eb;
+  --surface: #fff;
+  --canvas: #f5f7fa;
+  --accent: #326fd1;
+  --accent-soft: #edf3fc;
+  --ui-radius: 12px;
+  color: var(--ink);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-underline-offset: 3px;
+  caret-color: var(--accent);
+}
+::selection {
+  background: #d8e7ff;
+  color: #173b72;
+}
+:where(button, a, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.muted {
+  color: var(--muted);
+}
+.workspace-main,
+.project-hub-page,
+.capability-page,
+.shared-result {
+  background: var(--canvas);
+}
+
+/* Navigation is a separate neutral layer, not a competing column of cards. */
+.sidebar {
+  background: #f9fafc;
+  border-color: var(--border);
+  padding-top: 24px;
+}
+.sidebar .brand {
+  padding-bottom: 24px;
+}
+.sidebar .brand-icon {
+  background: transparent;
+  border: 0;
+  font-size: 23px;
+}
+.sidebar .brand b {
+  font-size: 23px;
+  letter-spacing: -0.02em;
+}
+.sidebar
+  :is(
+    .brand-subtitle,
+    .sidebar-empty,
+    .sidebar-section-title,
+    .user-row small
+  ) {
+  color: #617085;
+  font-size: 12px;
+}
+.workspace-navigation button {
+  min-height: 44px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+.workspace-navigation button.active {
+  background: #e8effb;
+  color: #245db2;
+}
+.sidebar
+  :is(
+    .conversation-list button,
+    .sidebar-utilities button,
+    .account-menu-trigger
+  ) {
+  font-size: 13px;
+}
+.sidebar .conversation-list button {
+  padding-block: 11px;
+}
+.workspace-header {
+  min-height: 64px;
+  border-color: var(--border);
+}
+.workspace-header :is(.ant-btn, .ant-select, small),
+.workspace-status {
+  font-size: 12px;
+  color: var(--muted);
+}
+.workspace-header .ant-btn {
+  min-height: 32px;
+}
+
+/* Project index: an aligned working list with one dominant entry action. */
+.project-index.project-hub-page {
+  padding: 40px clamp(20px, 4vw, 64px);
+}
+.project-index .project-hub-header,
+.project-index-surface {
+  max-width: 1440px;
+}
+.project-index.project-hub-page .project-hub-header h1 {
+  margin: 0 0 10px;
+  font-size: 30px;
+  line-height: 1.35;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+.project-index .project-hub-header p {
+  font-size: 14px;
+  color: var(--muted);
+  margin: 0;
+}
+.project-index .project-hub-header {
+  padding-bottom: 28px;
+  align-items: center;
+}
+.project-index .project-hub-header .ant-btn-primary {
+  height: 42px;
+  font-size: 14px;
+}
+.project-index-surface {
+  border-color: var(--border);
+  border-radius: var(--ui-radius);
+}
+.project-index .project-hub-controls {
+  padding: 22px 24px 0;
+  gap: 18px;
+}
+.project-index .project-hub-controls .ant-segmented {
+  background: #f0f3f7;
+}
+.project-index .project-hub-controls .ant-segmented-item-label {
+  padding: 6px 16px;
+  font-size: 14px;
+}
+.project-index
+  .project-hub-search
+  :is(.ant-input-affix-wrapper, .ant-select, .ant-btn) {
+  height: 38px;
+  font-size: 14px;
+}
+.project-index .project-hub-search .ant-input-affix-wrapper {
+  max-width: 460px;
+}
+.project-index .project-hub-list-title {
+  font-size: 14px;
+  padding-top: 24px;
+}
+.project-index .project-hub-list-title small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.project-index-columns {
+  background: #f7f9fb;
+  color: var(--muted);
+  font-size: 12px;
+  padding-block: 13px;
+}
+.project-index .project-hub-item {
+  padding-block: 24px;
+  border-color: #e9edf2;
+}
+.project-index .project-hub-item:hover {
+  background: #f8faff;
+}
+.project-index .project-hub-title button {
+  font-size: 16px;
+  line-height: 1.6;
+  font-weight: 600;
+}
+.project-index .project-hub-description {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.project-index
+  :is(.project-index-status, .project-index-owner, .project-index-date) {
+  font-size: 13px;
+  color: var(--muted);
+}
+.project-index-date {
+  font-variant-numeric: tabular-nums;
+}
+.project-index .project-hub-actions .ant-btn {
+  font-size: 13px;
+  min-height: 36px;
+}
+.project-index .project-hub-icon {
+  background: transparent;
+  color: #617b9d;
+}
+.project-index .project-hub-footer {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 18px 24px;
+}
+
+/* Conversation and evidence share a baseline while keeping the conversation primary. */
+.chat-pane {
+  --chat-ink: var(--ink);
+  --chat-muted: var(--muted);
+}
+.chat-pane > header,
+.work-pane > header {
+  padding: 20px 26px;
+  min-height: 76px;
+}
+.chat-pane > header h2,
+.work-pane > header h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.55;
+}
+.work-pane {
+  background: #fff;
+}
+.work-pane > header .subtle-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chat-pane .chat-scroll {
+  padding: 16px 28px 28px;
+}
+.chat-pane .chat-message {
+  padding-bottom: 28px;
+}
+.chat-pane .message-content {
+  font-size: 15px;
+  line-height: 1.85;
+  max-width: 76ch;
+}
+.chat-pane .chat-message.user .message-content {
+  background: #f0f4fa;
+  border: 0;
+}
+.chat-pane .message-meta b {
+  font-size: 13px;
+  color: var(--ink);
+}
+.chat-pane .message-meta time {
+  color: #617085;
+  font-size: 12px;
+}
+.chat-pane .message-content :is(h1, h2, h3, h4) {
+  font-size: 17px;
+  margin: 26px 0 12px;
+}
+.chat-pane .message-content :is(table, pre) {
+  font-size: 13px;
+}
+.chat-pane :is(.task-stream, .task-narration, .tool-trail) {
+  font-size: 13px;
+  color: var(--muted);
+}
+.plan-bar {
+  background: #f8fafd;
+  border-color: var(--border);
+}
+.plan-toggle {
+  font-size: 13px;
+}
+.composer {
+  border-color: var(--border);
+  background: #fff;
+  border-radius: var(--ui-radius);
+}
+.composer:focus-within {
+  outline: 2px solid #c3d7f6;
+  outline-offset: 1px;
+}
+.composer textarea {
+  font-size: 15px;
+  line-height: 1.75;
+}
+.tab-content {
+  padding: 24px;
+}
+.work-pane > .ant-tabs > .ant-tabs-nav {
+  padding-inline: 24px;
+}
+.work-pane .ant-tabs-tab {
+  font-size: 14px;
+  padding-block: 14px;
+}
+.work-pane .ant-table {
+  font-size: 14px;
+}
+.work-pane .ant-table-thead > tr > th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.work-pane :is(.ant-table-cell button, .ant-table-cell .ant-btn) {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+/* Selection rows and knowledge remain readable without a card inside every card. */
+.product-selection .scheme-list-row {
+  padding: 20px 0;
+}
+.product-selection .scheme-list-row.chosen {
+  border-left: 0;
+  background: #f1f6ff;
+  padding-inline: 16px;
+  border-radius: 10px;
+}
+.product-selection .scheme-list-row .composition-summary {
+  -webkit-line-clamp: 3;
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+.product-selection .scheme-members .ant-tag {
+  background: #f4f7fb;
+  color: #475e7c;
+  border-color: #e0e7f0;
+  font-size: 12px;
+}
+.product-selection .recommended-product-card {
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: none;
+}
+.product-selection .recommended-product-card .product-basic-info.compact {
+  gap: 8px 20px;
+}
+.product-selection
+  .recommended-product-card
+  :is(.product-details-button, .product-card-identity code) {
+  font-size: 13px;
+}
+.product-selection .selection-confirm-bar {
+  box-shadow: none;
+  border-color: var(--border);
+  padding: 18px 16px;
+}
+.product-selection .selection-confirm-bar > div:first-child {
+  min-width: 0;
+}
+.product-selection .selection-confirm-bar b {
+  font-size: 15px;
+  color: var(--ink);
+}
+.product-selection .selection-confirm-bar p {
+  color: var(--muted);
+  font-size: 13px;
+}
+.evidence-card {
+  border-color: var(--border);
+  border-radius: 10px;
+  box-shadow: none;
+}
+.evidence-card blockquote,
+.knowledge-markdown {
+  font-size: 14px;
+  line-height: 1.85;
+  color: var(--ink);
+}
+
+/* Search, account overlays, auth and shared deliverables use the same controls and text scale. */
+.capability-page {
+  padding: 40px clamp(20px, 4vw, 64px);
+}
+.capability-header h1 {
+  font-size: 30px;
+  line-height: 1.35;
+  letter-spacing: -0.025em;
+}
+.capability-header p {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+.capability-result-content > p {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--muted);
+}
+.capability-result-content h3 {
+  font-size: 17px;
+}
+.capability-result-meta,
+.capability-result-content small {
+  color: var(--muted);
+  font-size: 13px;
+}
+.ant-modal .ant-modal-title,
+.ant-drawer .ant-drawer-title {
+  font-size: 18px;
+  line-height: 1.5;
+}
+.ant-modal .ant-modal-content {
+  border-radius: 16px;
+}
+.ant-modal .ant-modal-header {
+  margin-bottom: 24px;
+}
+.ant-modal :is(.muted, .ant-form-item-extra),
+.ant-drawer :is(.muted, .ant-form-item-extra) {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.ant-modal .ant-form-item-label > label,
+.ant-drawer .ant-form-item-label > label {
+  color: var(--ink);
+  font-size: 14px;
+}
+.auth-story {
+  background: #edf2f9;
+  color: var(--ink);
+}
+.auth-story h1 {
+  font-size: clamp(32px, 3.5vw, 48px);
+  letter-spacing: -0.025em;
+  line-height: 1.4;
+}
+.auth-story > div > p {
+  color: var(--muted);
+  line-height: 1.9;
+  max-width: 34em;
+}
+.auth-form {
+  background: #fff;
+}
+.shared-result {
+  color: var(--ink);
+}
+.shared-cover h1 {
+  line-height: 1.4;
+  letter-spacing: -0.025em;
+}
+.shared-result :is(.shared-meta, .shared-readonly) {
+  color: var(--muted);
+  font-size: 13px;
+}
+.shared-source {
+  font-size: 14px;
+  line-height: 1.85;
+}
+.shared-sales-list {
+  font-size: 14px;
+}
+
+@media (max-width: 1100px) {
+  .project-index.project-hub-page,
+  .capability-page {
+    padding: 28px 24px;
+  }
+  .chat-pane .chat-scroll {
+    padding-inline: 20px;
+  }
+  .tab-content {
+    padding: 20px;
+  }
+  .workspace-header {
+    padding-inline: 18px;
+  }
+}
+@media (max-width: 760px) {
+  .project-index.project-hub-page,
+  .capability-page {
+    padding: 24px 16px;
+  }
+  .project-index.project-hub-page .project-hub-header h1,
+  .capability-header h1 {
+    font-size: 25px;
+  }
+  .project-index .project-hub-controls {
+    padding: 16px 16px 0;
+  }
+  .project-index .project-hub-controls .ant-segmented-item-label {
+    font-size: 13px;
+    padding-inline: 10px;
+  }
+  .project-index .project-hub-item {
+    padding: 20px 16px;
+  }
+  .project-index .project-hub-title button {
+    font-size: 15px;
+  }
+  .project-index .project-hub-list-title {
+    padding-inline: 16px;
+  }
+  .project-index .project-hub-actions .ant-btn {
+    min-height: 40px;
+  }
+  .chat-pane > header,
+  .work-pane > header {
+    padding: 16px 18px;
+  }
+  .chat-pane .chat-scroll {
+    padding-inline: 16px;
+  }
+  .tab-content {
+    padding: 16px;
+  }
+  .product-selection .selection-confirm-bar {
+    gap: 12px;
+  }
+  .product-selection .selection-confirm-bar > .ant-space {
+    width: 100%;
+  }
+  .product-selection .selection-confirm-bar > .ant-space .ant-btn {
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

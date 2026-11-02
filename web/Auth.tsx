@@ -40,7 +40,6 @@ export function Auth({
           <span>售前 Agent 工作台</span>
         </div>
         <div>
-          <p className="eyebrow">FROM REQUIREMENTS TO EVIDENCE</p>
           <h1>
             每一条判断，
             <br />
@@ -59,7 +58,6 @@ export function Auth({
         <small>为售前团队的真实工作而设计</small>
       </section>
       <section className="auth-form">
-        <p className="eyebrow">WORKSPACE ACCESS</p>
         <Typography.Title level={2}>
           {setup
             ? "建立你的工作空间"

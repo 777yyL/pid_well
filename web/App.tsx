@@ -524,7 +524,6 @@ function WorkspaceShell({
                 <div className="first-project-graphic">
                   <FileSearchOutlined />
                 </div>
-                <p className="eyebrow">YOUR PRESALES WORKSPACE</p>
                 <h1>让评估成为可持续的团队工作。</h1>
                 <p>
                   每个项目都有自己的文件、对话、产品证据和复核记录。

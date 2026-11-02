@@ -13,6 +13,8 @@ test("快速初评先保留原行并等待产品范围，深度评估保留原�
   assert.match(prompt, /此阶段不要执行销售项匹配/);
   assert.match(prompt, /用户确认范围并点击继续初评后才开始批量评估/);
   assert.equal(assessmentStartPrompt("agent"), startAssessmentPrompt);
+  assert.match(startAssessmentPrompt, /不分析评分办法、供应商资质/);
+  assert.match(startAssessmentPrompt, /requirementView/);
 });
 
 test("操作引导按真实项目阶段推进，执行及归档期间不打断", () => {

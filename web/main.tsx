@@ -6,6 +6,7 @@ import { App } from "./App";
 import "./styles.css";
 import "./theme.css";
 import "./chat.css";
+import "./workspace-design.css";
 document.documentElement.removeAttribute("data-theme");
 localStorage.removeItem("workspace.theme");
 createRoot(document.getElementById("root")!).render(
@@ -16,24 +17,26 @@ createRoot(document.getElementById("root")!).render(
         token: {
           colorPrimary: "#326fd1",
           colorInfo: "#326fd1",
-          colorBgLayout: "#f6f8fb",
+          colorBgLayout: "#f5f7fa",
           colorBgContainer: "#ffffff",
           colorBgElevated: "#ffffff",
           colorLink: "#326fd1",
-          colorText: "#1f2937",
-          colorTextSecondary: "#526171",
-          colorTextTertiary: "#596878",
-          colorBorder: "#dce3ed",
+          colorText: "#233044",
+          colorTextSecondary: "#56657a",
+          colorTextTertiary: "#617085",
+          colorBorder: "#dce3eb",
           colorSuccess: "#176b42",
           colorWarning: "#9a5700",
           colorError: "#b42318",
           borderRadius: 9,
           fontFamily: '"Segoe UI", "Microsoft YaHei", sans-serif',
           fontSize: 14,
+          controlHeight: 38,
+          lineHeight: 1.65,
         },
         components: {
           Button: { primaryShadow: "none" },
-          Table: { headerBg: "#f7f9fc" },
+          Table: { headerBg: "#f5f7fa", cellPaddingBlock: 13 },
           Tabs: { horizontalItemGutter: 22 },
         },
       }}

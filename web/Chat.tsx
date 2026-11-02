@@ -30,6 +30,8 @@ const names: Record<string, string> = {
   read_document: "阅读招标原文",
   save_requirements: "保存抽取条款",
   wiki_search: "在已选产品内检索销售项",
+  assessment_catalog: "准备所选产品的完整销售项目录",
+  assessment_evidence: "批量准备候选销售项全文证据",
   wiki_product_catalog: "读取已选产品销售项目录",
   wiki_global_search: "证据不足，进行全局补查",
   record_product_alternative: "记录其他产品可满足的建议",
@@ -231,7 +233,6 @@ export function Chat({
     <section className="chat-pane">
       <header className="pane-header">
         <div>
-          <span className="eyebrow">AGENT SESSION</span>
           <h2>{conversation?.title ?? "开始一次评估"}</h2>
         </div>
         <Tag bordered={false} color={activeRun ? "processing" : "default"}>
