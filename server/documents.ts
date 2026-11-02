@@ -9,6 +9,56 @@ export const supportedExtensions = new Set([
   ".md",
   ".txt",
 ]);
+export function wordHtmlLines(html: string) {
+  const decode = (text: string) =>
+    text.replace(
+      /&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi,
+      (match, entity: string) => {
+        if (entity.startsWith("#")) {
+          const code =
+            entity[1].toLowerCase() === "x"
+              ? parseInt(entity.slice(2), 16)
+              : parseInt(entity.slice(1), 10);
+          return code > 0 && code <= 0x10ffff
+            ? String.fromCodePoint(code)
+            : match;
+        }
+        return (
+          (
+            {
+              amp: "&",
+              lt: "<",
+              gt: ">",
+              quot: '"',
+              apos: "'",
+              nbsp: " ",
+            } as Record<string, string>
+          )[entity.toLowerCase()] ?? match
+        );
+      },
+    );
+  const plain = (text: string) =>
+    decode(text.replace(/<[^>]*>/g, ""))
+      .replace(/\s+/g, " ")
+      .trim();
+  return html
+    .replace(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi, (_, row: string) => {
+      const cells = [
+        ...row.matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi),
+      ].map((cell) =>
+        cell[1]
+          .replace(/<\/(?:p|li)>\s*(?=<(?:p|li)\b)|<br\s*\/?\s*>/gi, "；")
+          .replace(/<[^>]*>/g, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      );
+      return `\n${cells.join(" | ")}\n`;
+    })
+    .replace(/<\/(?:p|h[1-6]|li|table)>|<br\s*\/?\s*>/gi, "\n")
+    .split(/\r?\n/)
+    .map(plain)
+    .filter(Boolean);
+}
 export async function parseDocument(
   name: string,
   buffer: Buffer,
@@ -21,8 +71,8 @@ export async function parseDocument(
     );
   let lines: string[] = [];
   if (extension === ".docx") {
-    const result = await mammoth.extractRawText({ buffer });
-    lines = result.value.split(/\r?\n/).filter((line) => line.trim());
+    const result = await mammoth.convertToHtml({ buffer });
+    lines = wordHtmlLines(result.value);
   } else if (extension === ".xlsx") {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(

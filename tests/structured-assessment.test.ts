@@ -260,6 +260,11 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
         }),
       });
     };
+    const searchBeforeCatalog = WikiClient.prototype.search;
+    WikiClient.prototype.search = async () => {
+      throw new Error("目录匹配不应调用Wiki搜索");
+    };
+    let selectionCalls = 0;
     assert.equal(
       await runQuickAssessment(
         db,
@@ -270,8 +275,42 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
         async (p) => {
           progress.push(p);
         },
+        60000,
+        async (requirements, catalog) => {
+          selectionCalls++;
+          assert.ok(catalog.length > 0);
+          return {
+            selections: requirements.map((r) => ({
+              requirementId: r.id,
+              catalogIds: [
+                catalog.find((s) => s.sales === "视频监控")?.id ??
+                  catalog[0].id,
+              ],
+            })),
+          };
+        },
       ),
       true,
+    );
+    WikiClient.prototype.search = searchBeforeCatalog;
+    assert.equal(selectionCalls, 1, "一批需求共用一次全目录候选选择");
+    const indexTool = tools.find((t) => t.name === "assessment_catalog")!;
+    const indexResponse = await indexTool.execute("catalog-test", {});
+    const index = JSON.parse(
+      (indexResponse.content[0] as { text: string }).text,
+    );
+    assert.equal(index.complete, true);
+    assert.ok(index.items.length > 0);
+    const evidenceTool = tools.find((t) => t.name === "assessment_evidence")!;
+    const evidenceResponse = await evidenceTool.execute("evidence-test", {
+      selections: [{ requirementId: "T-1", catalogIds: [index.items[0].id] }],
+    });
+    const full = JSON.parse(
+      (evidenceResponse.content[0] as { text: string }).text,
+    );
+    assert.equal(full.packets[0].candidates[0].excerpts[0].lineStart, 1);
+    assert.ok(
+      full.packets[0].candidates[0].excerpts[0].quote.includes("技术规格"),
     );
     assert.equal(modelCalls, 1);
     const quickRows = await assessmentRows(db, pid);

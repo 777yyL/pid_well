@@ -3,6 +3,7 @@ import type { Database } from "./db.js";
 import { audit } from "./db.js";
 import { AppError } from "./errors.js";
 import type { RequirementInput } from "../shared/domain.js";
+import { requirementDocumentView } from "./requirement-document.js";
 
 export const coverageSchema = z.object({
   documentId: z.string().uuid(),
@@ -93,7 +94,26 @@ export async function sourceCoverage(db: Database, projectId: string) {
   );
   return docs.map((doc) => {
     const record = records.find((r) => r.data.documentId === doc.id);
-    const entries = record?.data.entries ?? [];
+    const recorded = record?.data.entries ?? [];
+    const entries = [
+      ...recorded,
+      ...requirementDocumentView(doc.lines)
+        .excluded.filter(
+          (e) =>
+            !recorded.some(
+              (entry) => entry.lineStart <= e.line && entry.lineEnd >= e.line,
+            ),
+        )
+        .map((e) => ({
+          id: `auto-noise-${e.line}`,
+          lineStart: e.line,
+          lineEnd: e.line,
+          status: "excluded" as const,
+          reason: `程序阅读视图：${e.reason}`,
+          requirementIds: [],
+          subrequirementIds: [],
+        })),
+    ];
     const uncheckedLines = doc.lines.flatMap((text, i) =>
       text.trim() &&
       !entries.some(

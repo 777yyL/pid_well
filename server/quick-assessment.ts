@@ -1,4 +1,9 @@
 import { runEvidencePipeline } from "./assessment-pipeline.js";
+import {
+  loadCatalogContext,
+  selectCatalogPackets,
+  type CatalogSelector,
+} from "./catalog-context.js";
 import { isTransientFailure } from "./run-recovery.js";
 import { z } from "zod";
 import {
@@ -236,6 +241,7 @@ export async function runQuickAssessment(
   ) => Promise<string>,
   emit: (payload: Record<string, unknown>) => Promise<void>,
   budget = 60000,
+  select?: CatalogSelector,
 ) {
   const scope = await productScope(db, projectId);
   if (scope.status !== "confirmed" || !scope.selected.length) return false;
@@ -409,16 +415,60 @@ export async function runQuickAssessment(
     return detail.message;
   };
   await progress("retrieving", "正在准备本次任务的产品目录与版本范围");
-  const prepared = pending.length
-    ? await prepareSelectedSearch(db, projectId, runId, signal)
-    : undefined;
+  const context =
+    pending.length && select
+      ? await loadCatalogContext(db, projectId, runId, signal)
+      : undefined;
+  const selectedBatches = new Map<number, Promise<QuickPacket[]>>();
+  const prepared =
+    pending.length && !context
+      ? await prepareSelectedSearch(db, projectId, runId, signal)
+      : undefined;
   await runEvidencePipeline(
     pending,
     signal,
     async (row, pipelineSignal) => {
       activeRetrievals.set(row.data.id, Date.now());
-      await progress("retrieving", `正在检索 ${row.data.id} 的候选销售项`);
+      await progress(
+        "retrieving",
+        context
+          ? `正在从完整目录选择 ${row.data.id} 的候选销售项`
+          : `正在检索 ${row.data.id} 的候选销售项`,
+      );
       try {
+        if (context && select) {
+          const batchIndex = Math.floor(pending.indexOf(row) / 5);
+          let selection = selectedBatches.get(batchIndex);
+          if (!selection) {
+            selection = selectCatalogPackets(
+              context,
+              pending
+                .slice(batchIndex * 5, batchIndex * 5 + 5)
+                .map((r) => r.data),
+              select,
+              pipelineSignal,
+              budget,
+            );
+            selectedBatches.set(batchIndex, selection);
+          }
+          const packet = (await selection).find(
+            (p) => p.requirement.id === row.data.id,
+          )!;
+          await audit(db, projectId, null, runId, "product_scoped_search", {
+            requirementId: row.data.id,
+            query: row.data.raw,
+            scopeRevision: context.scopeRevision,
+            matchCount: packet.candidates.length,
+            mode: "catalog_model",
+            catalogSize: context.index.length,
+          });
+          counters.retrieved++;
+          await progress(
+            "retrieving",
+            `已按完整产品目录准备 ${counters.retrieved} 条需求的候选全文`,
+          );
+          return packet;
+        }
         const packet: QuickPacket = {
           requirement: row.data,
           candidates: [],
@@ -504,7 +554,59 @@ export async function runQuickAssessment(
             for (const value of result) judged.add(value.requirementId);
             counters.judged = judged.size;
             await progress("judging", batchMessage);
-            if (attempt === 0) {
+            if (attempt === 0 && context && select) {
+              const unresolved = result.filter((value) =>
+                value.checks.some(
+                  (c) => c.level === "unknown" || c.level === "no_match",
+                ),
+              );
+              if (unresolved.length) {
+                currentStage = "产品内全量复查";
+                await progress(
+                  "judging",
+                  "正在从完整产品目录复查证据不足的条款",
+                );
+                const extra = await selectCatalogPackets(
+                  context,
+                  unresolved.map(
+                    (value) =>
+                      batch.find(
+                        (p) => p.requirement.id === value.requirementId,
+                      )!.requirement,
+                  ),
+                  select,
+                  pipelineSignal,
+                  budget,
+                  `首次判断存在缺口，请再次检查全部目录，寻找遗漏或组合销售项。${JSON.stringify(unresolved.map((v) => ({ requirementId: v.requirementId, checks: v.checks.map((c) => ({ reason: c.reason, level: c.level })) })))}`,
+                );
+                for (const packet of extra) {
+                  const target = batch.find(
+                    (p) => p.requirement.id === packet.requirement.id,
+                  )!;
+                  for (const c of packet.candidates)
+                    if (
+                      !target.candidates.some(
+                        (other) =>
+                          other.path === c.path && other.product === c.product,
+                      )
+                    )
+                      target.candidates.push(c);
+                }
+                result = [];
+                for (const part of planQuickBatches(batch, budget))
+                  result.push(
+                    ...parseQuickJudgments(
+                      await invokeJudge(
+                        part,
+                        "已复查完整产品目录，请依据候选全文判断，证据不足仍保留unknown。",
+                        pipelineSignal,
+                      ),
+                      part.map((p) => p.requirement.id),
+                    ),
+                  );
+              }
+            }
+            if (attempt === 0 && !context) {
               currentStage = "证据补查";
               let supplemented = false;
               for (const value of result) {

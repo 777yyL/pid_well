@@ -18,6 +18,7 @@ import {
 } from "./assessment.js";
 import { WikiClient, snapshotPage, PRODUCT_OVERVIEW_PATH } from "./wiki.js";
 import { numberedLines } from "./documents.js";
+import { requirementDocumentView } from "./requirement-document.js";
 import { createReport } from "./reports.js";
 import { AppError } from "./errors.js";
 import { coverageSchema, saveCoverage } from "./source-coverage.js";
@@ -36,6 +37,11 @@ import {
 } from "./product-search.js";
 import { projectKnowledge, knowledgeContent } from "./structured-knowledge.js";
 import { loadSettings } from "./settings.js";
+import {
+  loadCatalogContext,
+  catalogPackets,
+  type CatalogContext,
+} from "./catalog-context.js";
 export interface ToolContext {
   db: Database;
   projectId: string;
@@ -47,6 +53,15 @@ export interface ToolContext {
 }
 export function createTools(ctx: ToolContext): AgentTool[] {
   const { db, projectId, conversationId, runId } = ctx;
+  let catalogContext: CatalogContext | undefined;
+  const getCatalog = async (signal?: AbortSignal) => {
+    const scope = await productScope(db, projectId);
+    if (scope.status !== "confirmed")
+      throw new AppError(409, "请先确认产品版本范围");
+    if (!catalogContext || catalogContext.scopeRevision !== scope.revision)
+      catalogContext = await loadCatalogContext(db, projectId, runId, signal);
+    return catalogContext;
+  };
   const tool = <T extends z.ZodType>(
     name: string,
     label: string,
@@ -114,6 +129,69 @@ export function createTools(ctx: ToolContext): AgentTool[] {
   };
   return [
     tool(
+      "assessment_catalog",
+      "准备产品销售项目录",
+      "用户确认产品版本后优先调用一次，程序加载该范围全部销售项，无需关键词搜索。返回名称、分类、描述及能力供你批量选择；分页浏览直到complete，不得把未读目录当作无能力。随后用assessment_evidence批量获取候选全文。",
+      z.object({
+        offset: z.number().int().nonnegative().default(0),
+        count: z.number().int().min(1).max(200).default(200),
+      }),
+      async (args, signal) => {
+        const context = await getCatalog(signal);
+        const items = context.index.slice(
+          args.offset,
+          args.offset + args.count,
+        );
+        return {
+          scopeRevision: context.scopeRevision,
+          total: context.index.length,
+          items,
+          complete: args.offset + items.length >= context.index.length,
+          nextOffset: args.offset + items.length,
+        };
+      },
+    ),
+    tool(
+      "assessment_evidence",
+      "准备候选销售项全文",
+      "按assessment_catalog返回的ID为多条需求准备候选完整原文及快照行号，支持多销售项组合。不要只按名称挑选。无匹配或证据不足先复查完整目录，再考虑全局补查。",
+      z.object({
+        selections: z
+          .array(
+            z.object({
+              requirementId: z.string(),
+              catalogIds: z.array(z.string()),
+            }),
+          )
+          .min(1)
+          .max(10),
+      }),
+      async (args, signal) => {
+        const context = await getCatalog(signal);
+        const requirements = await db.query<{
+          data: import("../shared/domain.js").RequirementInput;
+        }>(
+          "SELECT data FROM requirements WHERE project_id=$1 AND id=ANY($2::text[])",
+          [projectId, args.selections.map((s) => s.requirementId)],
+        );
+        const packets = catalogPackets(
+          context,
+          requirements.map((r) => r.data),
+          args,
+        );
+        for (const packet of packets)
+          await audit(db, projectId, null, runId, "product_scoped_search", {
+            requirementId: packet.requirement.id,
+            query: packet.requirement.raw,
+            scopeRevision: context.scopeRevision,
+            matchCount: packet.candidates.length,
+            mode: "catalog_model",
+            catalogSize: context.index.length,
+          });
+        return { scopeRevision: context.scopeRevision, packets };
+      },
+    ),
+    tool(
       "project_context",
       "查看项目",
       "读取项目背景、文件列表、已抽取要求、评估结果和人工修改。开始每次任务时先读取。",
@@ -135,7 +213,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           [projectId, args.count, args.offset],
         );
         const findings = await db.query(
-          "SELECT data FROM audit_log WHERE project_id=$1 AND action='finding' ORDER BY id DESC LIMIT 10",
+          "SELECT data FROM audit_log WHERE project_id=$1 AND action='finding' AND data->>'category' NOT IN ('资质要求','评分办法') ORDER BY id DESC LIMIT 10",
           [projectId],
         );
         const [counts] = await db.query(
@@ -261,7 +339,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "read_document",
       "读取招标原文",
-      "按稳定行号读取本项目已上传文件，返回原文和行号。分批读取，不能遗漏文档后半部分。",
+      "按稳定行号读取本项目已上传文件，返回完整原文text及去噪需求视图requirementView，后者保留原始行号并说明排除原因。优先从需求视图提取，text用于回查；只分析技术需求，不分析评分或供应商资质。分批读取，不能遗漏文档后半部分。",
       z.object({
         documentId: z.string().uuid(),
         start: z.number().int().positive().default(1),
@@ -277,6 +355,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           name: doc.name,
           total: doc.lines.length,
           text: numberedLines(doc.lines, args.start, args.count),
+          requirementView: requirementDocumentView(doc.lines, args.start, args.count),
         };
       },
     ),
@@ -617,13 +696,11 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "record_finding",
       "记录项目分析",
-      "保存项目背景、基本要求、资质和评分办法等阶段性分析。内容必须附原文证据；这不是技术条款存储工具。",
+      "仅保存与需求理解有关的项目背景、需求边界和风险。当前不分析评分办法和供应商资质。内容应附原文依据，技术需求请用save_requirements。",
       z.object({
         category: z.enum([
           "项目背景",
           "基本要求",
-          "资质要求",
-          "评分办法",
           "风险说明",
         ]),
         content: z.string().min(1).max(30000),
