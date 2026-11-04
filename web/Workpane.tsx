@@ -1,3 +1,4 @@
+import { AgentObservation } from "./AgentObservation";
 import { useRef, useState } from "react";
 import {
   coverageLabel,
@@ -664,6 +665,10 @@ export function Workpane({
     <div className="tab-content">
       <div className="section-toolbar">
         <h3>项目分析与留痕</h3>
+        <AgentObservation
+          projectId={workspace.project.id}
+          runs={workspace.runs}
+        />
         <Button icon={<AuditOutlined />} onClick={() => void openAudit()}>
           查看修改记录
         </Button>

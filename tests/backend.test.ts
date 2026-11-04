@@ -1313,6 +1313,42 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
       assert.equal(duplicate.json().id, runId);
       const result = await waitRun(runId);
       assert.equal(result.status, "completed", result.error);
+      const observation = await request(
+        "GET",
+        `/api/runs/${runId}/observation`,
+      );
+      assert.equal(observation.statusCode, 200, observation.body);
+      assert(
+        observation
+          .json()
+          .events.some((e: { type: string }) => e.type === "model_request"),
+      );
+      assert(
+        observation
+          .json()
+          .events.some((e: { type: string }) => e.type === "model_response"),
+      );
+      const lastId = observation.json().events.at(-1)?.id;
+      if (lastId) {
+        const next = await request(
+          "GET",
+          `/api/runs/${runId}/observation?after=${lastId}`,
+        );
+        assert(
+          next
+            .json()
+            .events.every((e: { id: number }) => Number(e.id) > Number(lastId)),
+        );
+      }
+      assert.equal(
+        (
+          await app.inject({
+            method: "GET",
+            url: `/api/runs/${runId}/observation`,
+          })
+        ).statusCode,
+        401,
+      );
       const events = await request("GET", `/api/runs/${runId}/events`);
       assert(
         events

@@ -1,3 +1,4 @@
+import { redactObservation } from "./observation.js";
 import { projectKnowledge, overviewMarkdown } from "./structured-knowledge.js";
 import type { FastifyInstance } from "fastify";
 import { randomUUID, createHash } from "node:crypto";
@@ -501,6 +502,20 @@ export function routes(
       );
     });
     return { id: runId };
+  });
+  app.get("/api/runs/:id/observation", async (request) => {
+    const id = param(request, "id");
+    const [run] = await db.query<Run>("SELECT * FROM runs WHERE id=$1", [id]);
+    if (!run) throw new AppError(404, "执行不存在");
+    await accessProject(db, requireUser(request), run.project_id);
+    const { after } = z
+      .object({ after: z.coerce.number().int().min(0).default(0) })
+      .parse(request.query);
+    const events = await db.query(
+      "SELECT id,type,payload,created_at FROM run_events WHERE run_id=$1 AND id>$2 AND type IN ('model_request','model_response','tool_execution_start','tool_execution_end','assistant_end','run_retry','run_finished','context_compaction','quick_progress') ORDER BY id LIMIT 100",
+      [id, after],
+    );
+    return redactObservation({ run, events });
   });
   app.post("/api/runs/:id/cancel", async (request) => {
     const id = param(request, "id");
