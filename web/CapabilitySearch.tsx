@@ -3,6 +3,8 @@ import {
   App,
   Alert,
   Button,
+  Collapse,
+  Descriptions,
   Drawer,
   Empty,
   Input,
@@ -315,6 +317,109 @@ export function CapabilitySearch() {
                   : "混合排序"}
             </small>
           </div>
+          {!!response.warnings?.length && (
+            <Alert
+              type="warning"
+              showIcon
+              message="检索提示"
+              description={response.warnings.map((warning, i) => (
+                <div key={i}>{warning}</div>
+              ))}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          {response.index &&
+            response.index.ready < response.index.total &&
+            !response.warnings?.length && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`索引尚未全部就绪：${response.index.ready} / ${response.index.total} 项，当前结果可能不完整。`}
+              />
+            )}
+          {response.rerank?.enabled &&
+            !response.rerank.applied &&
+            !response.warnings?.length && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message="本次精排未生效，结果使用召回排序。"
+              />
+            )}
+          {(response.timings || response.engine || response.index) && (
+            <Collapse
+              ghost
+              size="small"
+              style={{ marginBottom: 12 }}
+              items={[
+                {
+                  key: "diagnostics",
+                  label: response.timings
+                    ? `检索详情 · 召回 ${response.timings.retrievalMs.toFixed(0)} ms · ${response.rerank?.applied ? "已精排" : "未精排"}`
+                    : "检索详情",
+                  children: (
+                    <Descriptions
+                      size="small"
+                      column={{ xs: 1, sm: 2, md: 3 }}
+                      items={[
+                        ...(response.engine
+                          ? [
+                              {
+                                key: "engine",
+                                label: "检索引擎",
+                                children: response.engine,
+                              },
+                            ]
+                          : []),
+                        ...(response.timings
+                          ? [
+                              {
+                                key: "load",
+                                label: "数据准备",
+                                children: `${response.timings.loadMs.toFixed(0)} ms`,
+                              },
+                              {
+                                key: "embedding",
+                                label: "查询向量",
+                                children: `${response.timings.embeddingMs.toFixed(0)} ms`,
+                              },
+                              {
+                                key: "retrieve",
+                                label: "召回排序",
+                                children: `${response.timings.retrievalMs.toFixed(0)} ms`,
+                              },
+                              {
+                                key: "rerank",
+                                label: "精排",
+                                children: response.rerank?.applied
+                                  ? `${response.timings.rerankMs.toFixed(0)} ms`
+                                  : "未应用",
+                              },
+                              {
+                                key: "total",
+                                label: "服务端总耗时",
+                                children: `${response.timings.totalMs.toFixed(0)} ms`,
+                              },
+                            ]
+                          : []),
+                        ...(response.index
+                          ? [
+                              {
+                                key: "index",
+                                label: "索引状态",
+                                children: `就绪 ${response.index.ready} / ${response.index.total}；待处理 ${response.index.pending}；失败 ${response.index.failed}`,
+                              },
+                            ]
+                          : []),
+                      ]}
+                    />
+                  ),
+                },
+              ]}
+            />
+          )}
           <div className="capability-results">
             {response.results.map((result) => (
               <article className="capability-result" key={result.path}>
@@ -339,10 +444,14 @@ export function CapabilitySearch() {
                   )}
                   {result.summary && <p>{result.summary}</p>}
                   <small className="muted">
-                    {result.category} · 关键词得分 {result.keywordScore ?? 0}
+                    {result.category} · 关键词得分{" "}
+                    {(result.keywordScore ?? 0).toFixed(3)}
                     {result.vectorSimilarity != null
                       ? ` · 余弦相似度 ${result.vectorSimilarity.toFixed(3)}`
                       : ""}{" "}
+                    {result.rerankScore != null
+                      ? ` · 精排得分 ${result.rerankScore.toFixed(3)}`
+                      : ""}
                     · 相关性不代表满足程度
                   </small>
                 </div>

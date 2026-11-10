@@ -5,6 +5,13 @@ import {
   resolveSemanticSettings,
 } from "./semantic-settings.js";
 import { requestEmbeddings } from "./semantic-catalog.js";
+import {
+  loadRerankSettings,
+  rerankSettingsView,
+  resolveRerankSettings,
+  saveRerankSettings,
+  requestRerank,
+} from "./reranker.js";
 import { redactObservation } from "./observation.js";
 import { projectKnowledge, overviewMarkdown } from "./structured-knowledge.js";
 import type { FastifyInstance } from "fastify";
@@ -205,6 +212,35 @@ export function routes(
   app.get("/api/settings/semantic", async (request) => {
     requireAdmin(request);
     return semanticSettingsView(await loadSemanticSettings(db));
+  });
+  app.get("/api/settings/rerank", async (request) => {
+    requireAdmin(request);
+    return rerankSettingsView(await loadRerankSettings(db));
+  });
+  app.put("/api/settings/rerank", async (request) => {
+    const user = requireAdmin(request);
+    const result = await saveRerankSettings(db, request.body);
+    await audit(db, null, user.id, null, "rerank_settings_changed", {});
+    return result;
+  });
+  app.post("/api/settings/rerank/test", async (request) => {
+    requireAdmin(request);
+    const settings = await resolveRerankSettings(db, request.body),
+      started = Date.now();
+    try {
+      await requestRerank(
+        "访客预约审批",
+        ["支持访客预约及审批", "支持录像回放"],
+        settings,
+        new AbortController().signal,
+      );
+      return { ok: true, elapsedMs: Date.now() - started };
+    } catch {
+      throw new AppError(
+        422,
+        "精排连接测试失败，请检查地址、模型、密钥和 /rerank 接口兼容性",
+      );
+    }
   });
   app.put("/api/settings/semantic", async (request) => {
     const user = requireAdmin(request);

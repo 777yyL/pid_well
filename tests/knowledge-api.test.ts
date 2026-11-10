@@ -69,6 +69,17 @@ test("PG maintenance, project scope and all search modes work without Wiki or re
     inject("PUT", `/api/knowledge/admin/${kind}/${value[key]}`, value);
   try {
     assert.equal(
+      (await inject("GET", "/api/settings/rerank", undefined, "member"))
+        .statusCode,
+      403,
+    );
+    assert.equal(
+      (await inject("POST", "/api/settings/rerank/test", {}, "member"))
+        .statusCode,
+      403,
+    );
+    assert.equal((await inject("GET", "/api/settings/rerank")).statusCode, 200);
+    assert.equal(
       (
         await inject(
           "PUT",
@@ -235,6 +246,9 @@ test("PG maintenance, project scope and all search modes work without Wiki or re
       timeoutMs: 1000,
     });
     assert.equal(saved.statusCode, 200, saved.body);
+    // Index construction is a background responsibility, never part of a query.
+    await refreshKnowledgeIndex(db, new AbortController().signal);
+    calls.length = 0;
     for (const mode of ["vector", "hybrid"]) {
       const hit = await inject(
         "POST",

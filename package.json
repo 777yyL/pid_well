@@ -12,7 +12,8 @@
     "start": "node --use-system-ca dist/server/index.js",
     "test": "tsx --import ./tests/env.mjs --test tests/*.test.ts",
     "check": "tsc --noEmit",
-    "evaluate:accuracy": "tsx scripts/evaluate-accuracy.ts"
+    "evaluate:accuracy": "tsx scripts/evaluate-accuracy.ts",
+    "evaluate:retrieval": "tsx scripts/evaluate-retrieval.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",

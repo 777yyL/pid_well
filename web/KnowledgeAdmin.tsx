@@ -17,6 +17,7 @@ import {
 import { api, post } from "./api";
 import { createRequestId } from "./request-id";
 import { SemanticSettings } from "./SemanticSettings";
+import { RerankSettings } from "./RerankSettings";
 import { types, fields, enums, type Row } from "./knowledge-fields";
 import { KnowledgeEditor } from "./KnowledgeEditor";
 import { KnowledgeOverview } from "./KnowledgeOverview";
@@ -46,6 +47,9 @@ export function KnowledgeAdmin() {
     enabled: boolean;
     counts: Record<string, number>;
     failures: { name: string; error: string }[];
+    engine?: string;
+    vectorAvailable?: boolean;
+    dimensions?: number[];
   } | null>(null);
   const [form] = Form.useForm();
   const config = types.find((t) => t[0] === tab),
@@ -165,7 +169,7 @@ export function KnowledgeAdmin() {
     <section className="knowledge-admin">
       <p className="muted">
         产品与销售项统一维护在
-        PostgreSQL，保存即生效。产品版本用于区分能力，历史评估保留当时引用的证据。
+        PostgreSQL，目录保存即生效，检索等待增量索引完成。历史评估保留当时引用的证据。
       </p>
       {error && (
         <Alert
@@ -352,6 +356,30 @@ export function KnowledgeAdmin() {
               <span>待更新 {index.counts.pending}</span>
               <span>建立中 {index.counts.indexing}</span>
               <span>失败 {index.counts.failed}</span>
+              {index.engine && <span>引擎 {index.engine}</span>}
+              {index.vectorAvailable !== undefined && (
+                <span>
+                  pgvector {index.vectorAvailable ? "可用" : "不可用"}
+                </span>
+              )}
+              {!!index.dimensions?.length && (
+                <span>向量维度 {index.dimensions.join("、")}</span>
+              )}
+              {index.counts.failed > 0 && (
+                <Button
+                  onClick={async () => {
+                    try {
+                      await post("/knowledge/admin/index/retry", {});
+                      setRevision((n) => n + 1);
+                      message.success("已安排重试失败的索引任务");
+                    } catch (e) {
+                      message.error((e as Error).message);
+                    }
+                  }}
+                >
+                  重试失败项
+                </Button>
+              )}
               <Button
                 onClick={async () => {
                   try {
@@ -361,7 +389,6 @@ export function KnowledgeAdmin() {
                     message.error((e as Error).message);
                   }
                 }}
-                disabled={!index.enabled}
               >
                 重建索引
               </Button>
@@ -379,6 +406,8 @@ export function KnowledgeAdmin() {
             />
           )}
           <SemanticSettings />
+          <h3 style={{ marginTop: 32 }}>候选精排</h3>
+          <RerankSettings />
         </>
       )}
       <KnowledgeEditor

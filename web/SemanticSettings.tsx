@@ -94,6 +94,7 @@ export function SemanticSettings() {
       </p>
       {error && <Alert type="error" message={error} showIcon />}
       <Form
+        name="knowledge-semantic"
         form={form}
         layout="vertical"
         disabled={loading || Boolean(busy) || Boolean(error)}

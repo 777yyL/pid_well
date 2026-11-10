@@ -1,4 +1,5 @@
 import { LIVE_KNOWLEDGE_ID } from "../server/product-knowledge.js";
+import { refreshKnowledgeIndex } from "../server/knowledge-search.js";
 import { WikiClient } from "../server/wiki.js";
 import { runQuickAssessment } from "../server/quick-assessment.js";
 import { test } from "node:test";
@@ -113,6 +114,7 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
       saleItems: await db.query("SELECT * FROM public.kb_sale_items"),
       dependencies: [],
     };
+    await refreshKnowledgeIndex(db, new AbortController().signal);
     const releaseId = LIVE_KNOWLEDGE_ID;
     await db.query(
       "INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'structured','首版',$2,$3)",
@@ -584,7 +586,9 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
       incomplete,
       incomplete.data.saleItems[0],
     );
-    await db.query("UPDATE kb_sale_items SET specification_md=NULL,description='支持实时预览' WHERE sale_item_id='s1'");
+    await db.query(
+      "UPDATE kb_sale_items SET specification_md=NULL,description='支持实时预览' WHERE sale_item_id='s1'",
+    );
     await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
       hit.snapshotId,
       incompleteContent,
@@ -604,7 +608,9 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
       saveAssessments(db, pid, [unsupported], {}),
       /技术规格待确认/,
     );
-    await db.query("UPDATE kb_sale_items SET specification_md='支持实时预览',description=NULL WHERE sale_item_id='s1'");
+    await db.query(
+      "UPDATE kb_sale_items SET specification_md='支持实时预览',description=NULL WHERE sale_item_id='s1'",
+    );
     await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
       hit.snapshotId,
       content,
@@ -744,9 +750,16 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
     }>("SELECT manifest FROM artifacts WHERE id=$1", [report.id]);
     assert.equal(artifact.manifest.sales[0].saleItemId, "s1");
     assert.equal(artifact.manifest.sales[0].knowledgeReleaseId, releaseId);
-    await assert.rejects(searchGlobalFallback(db,pid,rid,{
-      requirementId:'T-1',query:'实时预览',topK:5,reason:'insufficient_evidence',explanation:'需要核实其他产品的能力',
-    }), /禁止全局补查/);
+    await assert.rejects(
+      searchGlobalFallback(db, pid, rid, {
+        requirementId: "T-1",
+        query: "实时预览",
+        topK: 5,
+        reason: "insufficient_evidence",
+        explanation: "需要核实其他产品的能力",
+      }),
+      /禁止全局补查/,
+    );
     const fresh = randomUUID();
     await db.query(
       "INSERT INTO projects(id,name,wiki_project_id,owner_id) VALUES($1,'未确认','structured',$2)",
@@ -761,7 +774,12 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
       /刷新/,
     );
     assert.equal(
-      (await db.query("SELECT * FROM kb_project_releases WHERE project_id=$1",[fresh])).length,
+      (
+        await db.query(
+          "SELECT * FROM kb_project_releases WHERE project_id=$1",
+          [fresh],
+        )
+      ).length,
       0,
       "PG实时数据无需绑定发布版本",
     );
@@ -774,7 +792,12 @@ test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采�
       /未唯一定位/,
     );
     assert.equal(
-      (await db.query("SELECT * FROM kb_project_releases WHERE project_id=$1",[fresh])).length,
+      (
+        await db.query(
+          "SELECT * FROM kb_project_releases WHERE project_id=$1",
+          [fresh],
+        )
+      ).length,
       0,
       "无效产品不能创建发布绑定",
     );

@@ -1,8 +1,10 @@
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite/vector";
 import { Pool } from "pg";
 import { resolve } from "node:path";
 import { config } from "./config.js";
 import { migrateProductKnowledge } from "./product-knowledge.js";
+import { migrateRagIndex } from "./rag-schema.js";
 export interface Database {
   query<T = Record<string, unknown>>(
     sql: string,
@@ -64,7 +66,7 @@ export async function openDatabase(
     };
     return db;
   }
-  const engine = new PGlite(directory);
+  const engine = new PGlite(directory, { extensions: { vector } });
   await engine.waitReady;
   const wrap = (client: { query: Function }): Database => ({
     query: async <T>(sql: string, params: unknown[] = []) =>
@@ -152,6 +154,7 @@ export async function migrate(db: Database) {
     );
   });
   await migrateProductKnowledge(db);
+  await migrateRagIndex(db);
 }
 export async function audit(
   db: Database,

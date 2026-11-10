@@ -11,10 +11,22 @@ export type QuickSearchResult = {
   score?: number;
   keywordScore?: number;
   vectorSimilarity?: number | null;
+  rerankScore?: number;
 };
 export type QuickSearchResponse = {
   results: QuickSearchResult[];
   query: string;
   mode: string;
   elapsedMs: number;
+  engine?: string;
+  timings?: {
+    loadMs: number;
+    embeddingMs: number;
+    retrievalMs: number;
+    rerankMs: number;
+    totalMs: number;
+  };
+  warnings?: string[];
+  index?: { total: number; ready: number; pending: number; failed: number };
+  rerank?: { enabled: boolean; applied: boolean };
 };

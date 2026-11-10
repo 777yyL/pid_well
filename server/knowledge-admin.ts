@@ -15,11 +15,10 @@ import {
   knowledgeSearchSchema,
   searchKnowledge,
   refreshKnowledgeIndex,
-  knowledgeDocuments,
-  indexHash,
 } from "./knowledge-search.js";
 import { loadSemanticSettings } from "./semantic-settings.js";
-import { documentChunks } from "./knowledge-retrieval.js";
+import { retryKnowledgeIndex, embeddingNamespace } from "./retrieval-index.js";
+import { vectorAvailable } from "./rag-schema.js";
 
 const id = z.string().trim().min(1).max(500),
   text = z.string().max(200000).nullable().optional();
@@ -199,12 +198,18 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
   });
   app.get("/api/knowledge/products", async (request) => {
     requireUser(request);
-    const source = await liveKnowledge(db);
-    return {
-      products: source.data.products,
-      versions: source.data.versions,
-      categories: source.data.categories,
-    };
+    const [products, versions, categories] = await Promise.all([
+      db.query(
+        "SELECT * FROM kb_products WHERE status='active' ORDER BY product_id",
+      ),
+      db.query(
+        "SELECT v.* FROM kb_product_versions v JOIN kb_products p USING(product_id) WHERE v.status='active' AND p.status='active' ORDER BY product_version_id",
+      ),
+      db.query(
+        "SELECT c.* FROM kb_categories c JOIN kb_product_versions v USING(product_version_id) JOIN kb_products p USING(product_id) WHERE v.status='active' AND p.status='active' ORDER BY c.sort_order,c.category_id",
+      ),
+    ]);
+    return { products, versions, categories };
   });
   app.get("/api/knowledge/retrieval-options", async (request) => {
     requireUser(request);
@@ -290,8 +295,6 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
     const row = await upsert(db, kind, request.body);
     await audit(db, null, user.id, null, "knowledge_updated", { kind, id });
     // External SQL imports are detected by the periodic content-hash scan too.
-    if (kind === "sales")
-      await db.query("DELETE FROM kb_index_state WHERE sale_item_id=$1", [id]);
     queue("index", (signal) => refreshKnowledgeIndex(db, signal));
     return row;
   });
@@ -375,43 +378,50 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
   );
   app.get("/api/knowledge/admin/index", async (request) => {
     requireAdmin(request);
-    const source = await liveKnowledge(db),
-      settings = await loadSemanticSettings(db);
-    const states = await db.query<{
-      sale_item_id: string;
-      input_hash: string;
-      status: string;
-      error: string | null;
-    }>("SELECT * FROM kb_index_state");
-    const items = knowledgeDocuments(source).map((doc) => {
-      const state = states.find((s) => s.sale_item_id === doc.id);
-      const status =
-        state?.input_hash === indexHash(documentChunks(doc), settings)
-          ? state.status
-          : "pending";
-      return {
-        saleItemId: doc.id,
-        name: doc.title,
-        status,
-        error: status === "failed" ? state?.error : null,
-      };
-    });
+    const settings = await loadSemanticSettings(db),
+      namespace = settings.enabled ? embeddingNamespace(settings) : "keyword";
+    const active =
+      "FROM kb_sale_items s JOIN kb_product_versions v USING(product_version_id) JOIN kb_products p USING(product_id) LEFT JOIN kb_index_state q USING(sale_item_id) WHERE s.status='active' AND v.status='active' AND p.status='active'";
+    const counts = await db.query<{ status: string; count: number }>(
+      `SELECT CASE WHEN q.status='ready' AND NOT q.dirty AND q.namespace=$1 THEN 'ready' WHEN q.status IN ('failed','indexing') THEN q.status ELSE 'pending' END status,count(*)::int count ${active} GROUP BY 1`,
+      [namespace],
+    );
+    const failures = await db.query<{ name: string; error: string }>(
+      `SELECT s.name,q.error,q.attempts,q.next_retry_at ${active} AND q.status='failed' ORDER BY q.updated_at DESC LIMIT 50`,
+    );
+    const available = await vectorAvailable(db);
     return {
       enabled: settings.enabled,
-      total: items.length,
+      total: counts.reduce((sum, row) => sum + row.count, 0),
       counts: Object.fromEntries(
         ["pending", "indexing", "ready", "failed"].map((status) => [
           status,
-          items.filter((i) => i.status === status).length,
+          counts.find((row) => row.status === status)?.count ?? 0,
         ]),
       ),
-      failures: items.filter((i) => i.status === "failed"),
+      failures,
+      engine: "pgvector-exact",
+      vectorAvailable: available,
+      dimensions: available
+        ? (
+            await db.query<{ dimensions: number }>(
+              "SELECT DISTINCT dimensions FROM kb_search_vectors WHERE namespace=$1 ORDER BY dimensions",
+              [namespace],
+            )
+          ).map((row) => row.dimensions)
+        : [],
       job: jobs.get("index")?.status,
     };
   });
   app.post("/api/knowledge/admin/index/rebuild", async (request, reply) => {
     requireAdmin(request);
-    await db.query("UPDATE kb_index_state SET status='pending'");
+    await retryKnowledgeIndex(db, true);
+    queue("index", (signal) => refreshKnowledgeIndex(db, signal));
+    return reply.code(202).send({ status: "running" });
+  });
+  app.post("/api/knowledge/admin/index/retry", async (request, reply) => {
+    requireAdmin(request);
+    await retryKnowledgeIndex(db);
     queue("index", (signal) => refreshKnowledgeIndex(db, signal));
     return reply.code(202).send({ status: "running" });
   });

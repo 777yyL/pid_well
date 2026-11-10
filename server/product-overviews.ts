@@ -241,7 +241,11 @@ export async function generateOverview(
       },
     );
     requestSignal.throwIfAborted();
-    if (result.stopReason === "error" || result.stopReason === "length" || result.stopReason === "aborted")
+    if (
+      result.stopReason === "error" ||
+      result.stopReason === "length" ||
+      result.stopReason === "aborted"
+    )
       throw Object.assign(
         new AppError(
           502,
@@ -254,7 +258,10 @@ export async function generateOverview(
       .map((c) => c.text)
       .join("");
     if (!text.trim())
-      throw new AppError(502, "概览生成未完成：模型未返回可用内容，请重试或检查模型连接");
+      throw new AppError(
+        502,
+        "概览生成未完成：模型未返回可用内容，请重试或检查模型连接",
+      );
     const parsed = overviewSchema.parse(
       JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, "")),
     );
@@ -291,6 +298,10 @@ export async function refreshProductOverviews(
   db: Database,
   signal: AbortSignal,
 ) {
+  const [existing] = await db.query(
+    "SELECT 1 FROM kb_product_overviews WHERE edited=false AND generated_by IS NOT NULL AND generation_error IS NULL LIMIT 1",
+  );
+  if (!existing) return;
   const source = await liveKnowledge(db);
   for (const row of source.overviews ?? []) {
     signal.throwIfAborted();

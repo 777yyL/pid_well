@@ -64,8 +64,8 @@ export async function requestEmbeddings(
   return vectors;
 }
 
-// A few hundred scoped items use exact cosine ranking. Persist vectors in PG JSONB;
-// no extension or additional database is needed for the current catalog size.
+// PG catalogs use the same database-backed retrieval as capability search.
+// Legacy Wiki catalogs and explicit test adapters retain their scoped in-memory path.
 export async function prepareSemanticCatalog(
   db: Database,
   context: CatalogContext,
@@ -73,6 +73,56 @@ export async function prepareSemanticCatalog(
   embed?: Embed,
 ) {
   const settings = await loadSemanticSettings(db);
+  if (!embed && context.candidates.every((candidate) => candidate.saleItemId)) {
+    const { searchKnowledge } = await import("./knowledge-search.js");
+    const allowedPaths = new Set(
+      context.candidates.map((candidate) => candidate.path),
+    );
+    const bySale = new Map(
+      context.candidates.map((candidate, i) => [
+        candidate.saleItemId!,
+        context.index[i].id,
+      ]),
+    );
+    return async (requirements: RequirementInput[], limit = settings.topK) => {
+      const queries = requirements.map((requirement) => [
+        ...new Set([
+          requirement.raw,
+          ...(requirement.subrequirements?.map((s) => s.raw) ?? []),
+        ]),
+      ]);
+      // Pre-warm only query vectors in a bounded batch; source vectors are built offline.
+      if (settings.enabled && settings.mode !== "keyword")
+        await embeddingCache(db, settings, signal)(queries.flat());
+      const selections = [];
+      for (let i = 0; i < requirements.length; i++) {
+        const fused = new Map<string, number>();
+        for (const query of queries[i]) {
+          const response = await searchKnowledge(
+            db,
+            { query, topK: Math.min(100, limit * 2) },
+            { signal, allowedPaths },
+          );
+          if (response.index.pending || response.index.failed)
+            throw new Error(
+              "产品检索索引尚未完整就绪，回退目录核验；请在知识库页面查看进度",
+            );
+          response.results.forEach((hit, rank) => {
+            const id = bySale.get(hit.saleItemId);
+            if (id) fused.set(id, (fused.get(id) ?? 0) + 1 / (60 + rank + 1));
+          });
+        }
+        selections.push({
+          requirementId: requirements[i].id,
+          catalogIds: [...fused]
+            .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+            .slice(0, limit)
+            .map(([id]) => id),
+        });
+      }
+      return catalogPackets(context, requirements, { selections });
+    };
+  }
   const generate =
     embed ??
     ((texts: string[], signal: AbortSignal) =>
