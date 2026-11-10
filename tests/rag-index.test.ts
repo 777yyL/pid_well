@@ -8,12 +8,88 @@ import {
 import { createServer } from "node:http";
 import { saveSemanticSettings } from "../server/semantic-settings.js";
 import { saveRerankSettings } from "../server/reranker.js";
-import { retryKnowledgeIndex } from "../server/retrieval-index.js";
+import {
+  retryKnowledgeIndex,
+  knowledgeIndexWorkerState,
+} from "../server/retrieval-index.js";
 import { prepareSemanticCatalog } from "../server/semantic-catalog.js";
 import { knowledgePath } from "../server/structured-knowledge.js";
 import { LIVE_KNOWLEDGE_ID } from "../server/product-knowledge.js";
 import type { CatalogContext } from "../server/catalog-context.js";
 import type { RequirementInput } from "../shared/domain.js";
+
+test("worker exposes errors before claiming any jobs and clears them after recovery", async () => {
+  const db = await openDatabase("", "memory://");
+  await migrate(db);
+  let unavailable = true;
+  const workerDb: typeof db = {
+    ...db,
+    query: async (sql, params) => {
+      if (unavailable && sql.includes("FROM semantic_settings"))
+        throw new Error("configuration could not be decrypted");
+      return db.query(sql, params);
+    },
+  };
+  try {
+    await assert.rejects(
+      refreshKnowledgeIndex(workerDb, new AbortController().signal),
+      /configuration could not be decrypted/,
+    );
+    assert.equal(knowledgeIndexWorkerState(workerDb).status, "failed");
+    assert.match(
+      knowledgeIndexWorkerState(workerDb).error!,
+      /configuration could not be decrypted/,
+    );
+    unavailable = false;
+    await refreshKnowledgeIndex(workerDb, new AbortController().signal);
+    assert.equal(knowledgeIndexWorkerState(workerDb).status, "idle");
+    assert.equal(knowledgeIndexWorkerState(workerDb).error, undefined);
+  } finally {
+    await db.close();
+  }
+});
+
+test("rebuild populates missing index jobs after an external database import", async () => {
+  const db = await openDatabase("", "memory://");
+  try {
+    await migrate(db);
+    await db.query(
+      "INSERT INTO kb_products(product_id,product_code,name,status) VALUES('imported','Imported','导入产品','active')",
+    );
+    await db.query(
+      "INSERT INTO kb_product_versions(product_version_id,product_id,version,status) VALUES('imported-v1','imported','v1','active')",
+    );
+    await db.query(
+      "INSERT INTO kb_sale_items(sale_item_id,product_version_id,name,specification_md,status) VALUES('imported-sale','imported-v1','访客管理','支持访客预约审批','active')",
+    );
+    // Some restore/import tools omit derived tables or disable triggers while copying.
+    await db.query("DELETE FROM kb_index_state");
+    const before = await searchKnowledge(db, {
+      query: "访客预约",
+      mode: "keyword",
+    });
+    assert.deepEqual(before.index, {
+      total: 1,
+      ready: 0,
+      failed: 0,
+      pending: 1,
+    });
+    await retryKnowledgeIndex(db, true);
+    assert.equal(
+      (await db.query("SELECT sale_item_id FROM kb_index_state")).length,
+      1,
+      "rebuild must enqueue source records with no existing job",
+    );
+    await refreshKnowledgeIndex(db, new AbortController().signal);
+    assert.equal(
+      (await searchKnowledge(db, { query: "访客预约", mode: "keyword" }))
+        .results[0].saleItemId,
+      "imported-sale",
+    );
+  } finally {
+    await db.close();
+  }
+});
 
 test("persistent keyword index updates outside queries and synchronizes direct SQL writes and deletes", async () => {
   const db = await openDatabase("", "memory://");
@@ -72,6 +148,60 @@ test("persistent keyword index updates outside queries and synchronizes direct S
       (await searchKnowledge(db, { query: "随身物品暂存", mode: "keyword" }))
         .results.length,
       0,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("cleanup removes only dirty inactive sales across sale, version and product status changes", async () => {
+  const db = await openDatabase("", "memory://");
+  try {
+    await migrate(db);
+    for (const id of ["sale", "version", "product", "active"]) {
+      await db.query(
+        "INSERT INTO kb_products(product_id,product_code,name,status) VALUES($1,$1,$1,'active')",
+        [id],
+      );
+      await db.query(
+        "INSERT INTO kb_product_versions(product_version_id,product_id,version,status) VALUES($1,$1,'v1','active')",
+        [id],
+      );
+      await db.query(
+        "INSERT INTO kb_sale_items(sale_item_id,product_version_id,name,status) VALUES($1,$1,$1,'active')",
+        [id],
+      );
+    }
+    await refreshKnowledgeIndex(db, new AbortController().signal);
+    assert.equal(
+      (await db.query("SELECT sale_item_id FROM kb_search_documents")).length,
+      4,
+    );
+    await db.query(
+      "UPDATE kb_sale_items SET status='retired' WHERE sale_item_id='sale'",
+    );
+    await db.query(
+      "UPDATE kb_product_versions SET status='retired' WHERE product_version_id='version'",
+    );
+    await db.query(
+      "UPDATE kb_products SET status='retired' WHERE product_id='product'",
+    );
+    await refreshKnowledgeIndex(db, new AbortController().signal);
+    assert.deepEqual(
+      await db.query("SELECT sale_item_id FROM kb_search_documents"),
+      [{ sale_item_id: "active" }],
+    );
+    await db.query(
+      "UPDATE kb_products SET status='active' WHERE product_id='product'",
+    );
+    await refreshKnowledgeIndex(db, new AbortController().signal);
+    assert.equal(
+      (
+        await db.query(
+          "SELECT sale_item_id FROM kb_search_documents WHERE sale_item_id='product'",
+        )
+      ).length,
+      1,
     );
   } finally {
     await db.close();

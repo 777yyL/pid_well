@@ -17,7 +17,11 @@ import {
   refreshKnowledgeIndex,
 } from "./knowledge-search.js";
 import { loadSemanticSettings } from "./semantic-settings.js";
-import { retryKnowledgeIndex, embeddingNamespace } from "./retrieval-index.js";
+import {
+  retryKnowledgeIndex,
+  embeddingNamespace,
+  knowledgeIndexWorkerState,
+} from "./retrieval-index.js";
 import { vectorAvailable } from "./rag-schema.js";
 
 const id = z.string().trim().min(1).max(500),
@@ -382,8 +386,12 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
       namespace = settings.enabled ? embeddingNamespace(settings) : "keyword";
     const active =
       "FROM kb_sale_items s JOIN kb_product_versions v USING(product_version_id) JOIN kb_products p USING(product_id) LEFT JOIN kb_index_state q USING(sale_item_id) WHERE s.status='active' AND v.status='active' AND p.status='active'";
-    const counts = await db.query<{ status: string; count: number }>(
-      `SELECT CASE WHEN q.status='ready' AND NOT q.dirty AND q.namespace=$1 THEN 'ready' WHEN q.status IN ('failed','indexing') THEN q.status ELSE 'pending' END status,count(*)::int count ${active} GROUP BY 1`,
+    const counts = await db.query<{
+      status: string;
+      count: number;
+      missing: number;
+    }>(
+      `SELECT CASE WHEN q.status='ready' AND NOT q.dirty AND q.namespace=$1 THEN 'ready' WHEN q.status IN ('failed','indexing') THEN q.status ELSE 'pending' END status,count(*)::int count,count(*) FILTER(WHERE q.sale_item_id IS NULL)::int missing ${active} GROUP BY 1`,
       [namespace],
     );
     const failures = await db.query<{ name: string; error: string }>(
@@ -400,6 +408,8 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
         ]),
       ),
       failures,
+      missingQueue: counts.reduce((sum, row) => sum + row.missing, 0),
+      worker: knowledgeIndexWorkerState(db),
       engine: "pgvector-exact",
       vectorAvailable: available,
       dimensions: available
@@ -415,14 +425,40 @@ export function knowledgeAdminRoutes(app: FastifyInstance, db: Database) {
   });
   app.post("/api/knowledge/admin/index/rebuild", async (request, reply) => {
     requireAdmin(request);
-    await retryKnowledgeIndex(db, true);
+    const settings = await loadSemanticSettings(db);
+    if (settings.enabled) {
+      if (!settings.baseUrl || !settings.model)
+        throw new AppError(422, "请先保存完整的 Embedding 地址和模型配置");
+      if (!(await vectorAvailable(db)))
+        throw new AppError(409, "pgvector 不可用，请先启用数据库 vector 扩展");
+    }
+    const scheduled = await retryKnowledgeIndex(db, true);
+    if (!scheduled)
+      throw new AppError(
+        422,
+        "当前数据库没有已启用的销售项，请检查产品、版本和销售项状态",
+      );
     queue("index", (signal) => refreshKnowledgeIndex(db, signal));
-    return reply.code(202).send({ status: "running" });
+    return reply
+      .code(202)
+      .send({
+        status: "running",
+        scheduled,
+        message: `已安排 ${scheduled} 个销售项重建${settings.enabled ? "关键词和向量" : "关键词"}索引${settings.enabled ? "" : "；当前未启用向量服务"}`,
+      });
   });
   app.post("/api/knowledge/admin/index/retry", async (request, reply) => {
     requireAdmin(request);
-    await retryKnowledgeIndex(db);
+    const scheduled = await retryKnowledgeIndex(db);
     queue("index", (signal) => refreshKnowledgeIndex(db, signal));
-    return reply.code(202).send({ status: "running" });
+    return reply
+      .code(202)
+      .send({
+        status: "running",
+        scheduled,
+        message: scheduled
+          ? `已安排 ${scheduled} 个失败项重试`
+          : "当前没有失败项需要重试",
+      });
   });
 }

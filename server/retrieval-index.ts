@@ -15,6 +15,7 @@ import { documentChunks } from "./knowledge-retrieval.js";
 import { retrievalTokens } from "../shared/retrieval.js";
 import { vectorAvailable } from "./rag-schema.js";
 import { knowledgePath } from "./structured-knowledge.js";
+import { redactObservation } from "./observation.js";
 
 export function embeddingNamespace(
   settings: Pick<SemanticSettings, "baseUrl" | "model" | "revision">,
@@ -76,15 +77,41 @@ async function batchSource(
   };
 }
 const running = new WeakMap<Database, Promise<void>>();
+type IndexWorkerState = {
+  status: "idle" | "running" | "failed";
+  startedAt?: string;
+  finishedAt?: string;
+  error?: string;
+};
+const workerStates = new WeakMap<Database, IndexWorkerState>();
+export function knowledgeIndexWorkerState(db: Database): IndexWorkerState {
+  return { ...(workerStates.get(db) ?? { status: "idle" }) };
+}
 const activeNamespaces = new WeakMap<Database, string>();
 export async function refreshKnowledgeIndex(db: Database, signal: AbortSignal) {
   const existing = running.get(db);
   if (existing) return existing;
+  const state: IndexWorkerState = {
+    status: "running",
+    startedAt: new Date().toISOString(),
+  };
+  workerStates.set(db, state);
   const job = runIndex(db, signal);
   running.set(db, job);
   try {
     await job;
+    state.status = "idle";
+  } catch (error) {
+    state.status = signal.aborted ? "idle" : "failed";
+    if (!signal.aborted)
+      state.error = String(
+        redactObservation(
+          error instanceof Error ? error.message : "后台索引执行失败",
+        ),
+      ).slice(0, 1000);
+    throw error;
   } finally {
+    state.finishedAt = new Date().toISOString();
     if (running.get(db) === job) running.delete(db);
   }
 }
@@ -100,9 +127,19 @@ async function runIndex(db: Database, signal: AbortSignal) {
     );
     activeNamespaces.set(db, namespace);
   }
-  await db.query(
-    "DELETE FROM kb_search_documents d USING kb_sale_items s,kb_product_versions v,kb_products p,kb_index_state q WHERE d.sale_item_id=s.sale_item_id AND q.sale_item_id=s.sale_item_id AND q.dirty=true AND s.product_version_id=v.product_version_id AND v.product_id=p.product_id AND (s.status<>'active' OR v.status<>'active' OR p.status<>'active')",
-  );
+  await db.transaction(async (tx) => {
+    await tx.query("SET LOCAL statement_timeout='10s'");
+    // Materialize inactive IDs first. A cross-table OR in the DELETE join can
+    // make PostgreSQL enumerate the full catalog before noticing it is active.
+    await tx.query(`WITH inactive AS MATERIALIZED (
+      SELECT sale_item_id FROM kb_sale_items WHERE status<>'active'
+      UNION
+      SELECT s.sale_item_id FROM kb_product_versions v JOIN kb_sale_items s USING(product_version_id) WHERE v.status<>'active'
+      UNION
+      SELECT s.sale_item_id FROM kb_products p JOIN kb_product_versions v USING(product_id) JOIN kb_sale_items s USING(product_version_id) WHERE p.status<>'active'
+    ) DELETE FROM kb_search_documents d USING inactive i,kb_index_state q
+      WHERE d.sale_item_id=i.sale_item_id AND q.sale_item_id=i.sale_item_id AND q.dirty=true`);
+  });
   const vectors = embeddingCache(db, settings, signal);
   let preparedCount = 0;
   // A bounded pass keeps shutdown and other background jobs responsive on large imports.
@@ -271,9 +308,18 @@ async function runIndex(db: Database, signal: AbortSignal) {
 }
 
 export async function retryKnowledgeIndex(db: Database, rebuild = false) {
-  await db.query(
+  const [result] = await db.query<{ scheduled: number }>(
     rebuild
-      ? "UPDATE kb_index_state SET status='pending',dirty=true,attempts=0,generation=generation+1,next_retry_at=now(),error=NULL"
-      : "UPDATE kb_index_state SET status='pending',attempts=0,generation=generation+1,next_retry_at=now(),error=NULL WHERE status='failed'",
+      ? `WITH queued AS (
+      INSERT INTO kb_index_state(sale_item_id,status,dirty,generation,attempts,next_retry_at)
+      SELECT s.sale_item_id,'pending',true,1,0,now() FROM kb_sale_items s
+      JOIN kb_product_versions v USING(product_version_id) JOIN kb_products p USING(product_id)
+      WHERE s.status='active' AND v.status='active' AND p.status='active'
+      ON CONFLICT(sale_item_id) DO UPDATE SET status='pending',dirty=true,attempts=0,
+        generation=kb_index_state.generation+1,next_retry_at=now(),error=NULL,updated_at=now()
+      RETURNING sale_item_id) SELECT count(*)::int scheduled FROM queued`
+      : `WITH queued AS (UPDATE kb_index_state SET status='pending',attempts=0,generation=generation+1,next_retry_at=now(),error=NULL WHERE status='failed' RETURNING sale_item_id)
+        SELECT count(*)::int scheduled FROM queued`,
   );
+  return result.scheduled;
 }

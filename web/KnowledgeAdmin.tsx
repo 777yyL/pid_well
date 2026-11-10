@@ -42,6 +42,7 @@ export function KnowledgeAdmin() {
   const [edit, setEdit] = useState<Row | null>(null),
     [saving, setSaving] = useState(false);
   const [overview, setOverview] = useState<Row | null>(null);
+  const [indexAction, setIndexAction] = useState<"rebuild" | "retry" | "">("");
   const [index, setIndex] = useState<{
     total: number;
     enabled: boolean;
@@ -50,6 +51,8 @@ export function KnowledgeAdmin() {
     engine?: string;
     vectorAvailable?: boolean;
     dimensions?: number[];
+    missingQueue?: number;
+    worker?: { status: "idle" | "running" | "failed"; error?: string };
   } | null>(null);
   const [form] = Form.useForm();
   const config = types.find((t) => t[0] === tab),
@@ -93,7 +96,9 @@ export function KnowledgeAdmin() {
       void api<NonNullable<typeof index>>("/knowledge/admin/index", {
         signal: c.signal,
       })
-        .then(setIndex)
+        .then((value) => {
+          if (!c.signal.aborted) setIndex(value);
+        })
         .catch((e) => {
           if (!c.signal.aborted) setError(e.message);
         });
@@ -104,6 +109,21 @@ export function KnowledgeAdmin() {
       clearInterval(timer);
     };
   }, [tab, revision]);
+  async function runIndexAction(action: "rebuild" | "retry") {
+    setIndexAction(action);
+    try {
+      const result = await post<{ message?: string }>(
+        `/knowledge/admin/index/${action}`,
+        {},
+      );
+      message.success(result.message ?? "索引任务已提交，进度将自动刷新");
+      setRevision((n) => n + 1);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setIndexAction("");
+    }
+  }
   function openEditor(row?: Row) {
     const value = row
       ? Object.fromEntries(fields[tab].map((f) => [f, row[f] ?? undefined]))
@@ -356,6 +376,7 @@ export function KnowledgeAdmin() {
               <span>待更新 {index.counts.pending}</span>
               <span>建立中 {index.counts.indexing}</span>
               <span>失败 {index.counts.failed}</span>
+              {index.worker?.status === "running" && <span>后台正在处理</span>}
               {index.engine && <span>引擎 {index.engine}</span>}
               {index.vectorAvailable !== undefined && (
                 <span>
@@ -367,32 +388,43 @@ export function KnowledgeAdmin() {
               )}
               {index.counts.failed > 0 && (
                 <Button
-                  onClick={async () => {
-                    try {
-                      await post("/knowledge/admin/index/retry", {});
-                      setRevision((n) => n + 1);
-                      message.success("已安排重试失败的索引任务");
-                    } catch (e) {
-                      message.error((e as Error).message);
-                    }
-                  }}
+                  loading={indexAction === "retry"}
+                  disabled={!!indexAction}
+                  onClick={() => void runIndexAction("retry")}
                 >
                   重试失败项
                 </Button>
               )}
               <Button
-                onClick={async () => {
-                  try {
-                    await post("/knowledge/admin/index/rebuild", {});
-                    setRevision((n) => n + 1);
-                  } catch (e) {
-                    message.error((e as Error).message);
-                  }
-                }}
+                loading={indexAction === "rebuild"}
+                disabled={!!indexAction}
+                onClick={() => void runIndexAction("rebuild")}
               >
                 重建索引
               </Button>
             </div>
+          )}
+          {index?.worker?.error && (
+            <Alert
+              type="error"
+              showIcon
+              message="后台索引执行失败"
+              description={index.worker.error}
+            />
+          )}
+          {!!index?.missingQueue && (
+            <Alert
+              type="warning"
+              showIcon
+              message={`${index.missingQueue} 个销售项尚未登记索引任务，请点击重建索引补齐`}
+            />
+          )}
+          {index && !index.enabled && (
+            <Alert
+              type="info"
+              showIcon
+              message="当前未启用向量服务，重建仅生成关键词索引。生成向量前请保存并启用下方 Embedding 配置。"
+            />
           )}
           {!!index?.failures.length && (
             <Alert

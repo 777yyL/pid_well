@@ -292,6 +292,13 @@ test("PG maintenance, project scope and all search modes work without Wiki or re
     await refreshKnowledgeIndex(db, new AbortController().signal);
     const index = await inject("GET", "/api/knowledge/admin/index");
     assert.equal(index.json().counts.ready, 3);
+    assert.equal(index.json().missingQueue, 0);
+    assert.equal(index.json().worker.status, "idle");
+    const rebuild = await inject("POST", "/api/knowledge/admin/index/rebuild");
+    assert.equal(rebuild.statusCode, 202, rebuild.body);
+    assert.equal(rebuild.json().scheduled, 3);
+    assert.match(rebuild.json().message, /关键词和向量/);
+    await refreshKnowledgeIndex(db, new AbortController().signal);
     const beforeCalls = calls.length;
     await inject("POST", `/api/projects/${project}/knowledge/search`, {
       query: "拍照留痕",
