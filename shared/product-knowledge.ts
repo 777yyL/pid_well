@@ -65,11 +65,29 @@ export interface KnowledgeData {
   dependencies: KnowledgeDependency[];
 }
 export interface KnowledgeRelease {
+  live?: boolean;
   id: string;
   wiki_project_id: string;
   name: string;
   created_at: string;
   data: KnowledgeData;
+  overviews?: ProductOverview[];
+}
+export interface ProductOverview {
+  product_version_id: string;
+  input_hash: string;
+  overview: {
+    positioning: string;
+    scenarios: string[];
+    modules: { name: string; capabilities: string[]; saleItemIds: string[] }[];
+    limitations: string[];
+    unspecified: string[];
+  };
+  edited: boolean;
+  updated_at: string;
+  stale?: boolean;
+  generated_by?: string | null;
+  generation_error?: string | null;
 }
 export interface KnowledgeBrowse {
   releaseId: string | null;

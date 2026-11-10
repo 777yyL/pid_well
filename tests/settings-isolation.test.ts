@@ -13,7 +13,7 @@ import {
   saveAgentSettings,
 } from "../server/settings.js";
 
-test("个人Agent配置隔离、知识库仅管理员维护、新项目不能覆盖默认知识库", async () => {
+test("个人Agent配置隔离、知识库仅管理员维护、新项目直接使用PG", async () => {
   const db = await openDatabase(
     "",
     await mkdtemp(join(tmpdir(), "settings-isolation-")),
@@ -73,7 +73,7 @@ test("个人Agent配置隔离、知识库仅管理员维护、新项目不能覆
           wikiProjectId: "evil",
         })
       ).statusCode,
-      422,
+      200,
     );
     const wiki = await call("PUT", "/api/settings/wiki", admin, {
       wikiBaseUrl: "http://127.0.0.1:19828",
@@ -139,7 +139,7 @@ test("个人Agent配置隔离、知识库仅管理员维护、新项目不能覆
     assert.equal(
       (await call("GET", `/api/projects/${projectId}`, a)).json().project
         .wiki_project_id,
-      "central",
+      "pg",
     );
     await call("PUT", "/api/settings/wiki", admin, {
       defaultWikiProjectId: "central-new",
@@ -148,13 +148,13 @@ test("个人Agent配置隔离、知识库仅管理员维护、新项目不能覆
     assert.equal(
       (await call("GET", `/api/projects/${projectId}`, a)).json().project
         .wiki_project_id,
-      "central",
+      "pg",
     );
     const next = await call("POST", "/api/projects", b, { name: "新项目" });
     assert.equal(
       (await call("GET", `/api/projects/${next.json().id}`, b)).json().project
         .wiki_project_id,
-      "central-new",
+      "pg",
     );
     // A collaborator without personal settings must never borrow the project owner's model.
     await call("POST", `/api/projects/${projectId}/members`, admin, {

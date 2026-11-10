@@ -70,6 +70,9 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
   });
   assert.equal(project.statusCode, 200, project.body);
   const projectId = project.json().id;
+  // This suite exercises historical Wiki evidence and report compatibility.
+  // New-project PG behavior has dedicated knowledge-api integration coverage.
+  await db.query("UPDATE projects SET wiki_project_id='test-wiki' WHERE id=$1",[projectId]);
   const createdConversation = await request(
     "POST",
     `/api/projects/${projectId}/conversations`,
@@ -1350,6 +1353,15 @@ test("持久化工作台：权限、证据、复核、报告和 Agent 生命周�
         401,
       );
       const events = await request("GET", `/api/runs/${runId}/events`);
+      assert(
+        events
+          .json()
+          .events.every(
+            (e: { type: string }) =>
+              !["model_request", "model_response"].includes(e.type),
+          ),
+        "普通聊天轮询不应拉取完整模型上下文",
+      );
       assert(
         events
           .json()

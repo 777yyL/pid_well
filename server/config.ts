@@ -27,10 +27,30 @@ const env = z
         }
       }, "PUBLIC_BASE_URL 必须为 HTTP/HTTPS 访问入口，不能包含路径或凭据")
       .transform((value) => value.replace(/\/$/, "")),
+    LANGFUSE_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((v) => v === "true"),
+    LANGFUSE_BASE_URL: z.string().default(""),
+    LANGFUSE_PUBLIC_KEY: z.string().default(""),
+    LANGFUSE_SECRET_KEY: z.string().default(""),
+    LANGFUSE_TRACING_ENVIRONMENT: z.string().default("development"),
+    SEMANTIC_RETRIEVAL_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((v) => v === "true"),
+    EMBEDDING_BASE_URL: z.string().default(""),
+    EMBEDDING_REVISION: z.string().default("1"),
+    EMBEDDING_MODEL: z.string().default(""),
+    EMBEDDING_API_KEY: z.string().default(""),
+    EMBEDDING_TIMEOUT_MS: z.coerce.number().int().min(1000).default(30000),
+    SEMANTIC_TOP_K: z.coerce.number().int().min(1).max(100).default(10),
     DATA_DIR: z.string().default("./data"),
     DATABASE_URL: z.string().default(""),
     COOKIE_SECURE: z.enum(["true", "false"]).default("false"),
     MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(8).default(2),
+    QUICK_BATCH_SIZE: z.coerce.number().int().min(1).max(20).default(10),
+    QUICK_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(2),
     MAX_AUTO_RECOVERIES: z.coerce.number().int().min(0).max(5).default(3),
     RUN_TIMEOUT_MS: z.coerce.number().int().min(1000).default(900000),
     MODEL_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).default(600000),

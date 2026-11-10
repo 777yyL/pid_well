@@ -26,7 +26,6 @@ export async function productScope(
   db: Database,
   projectId: string,
 ): Promise<ProductScope> {
-  const release = await projectKnowledge(db, projectId);
   const [row] = await db.query<ProductScope>(
     "SELECT revision,status,recommendations,selected,strategy,confirmed_by FROM product_scopes WHERE project_id=$1",
     [projectId],
@@ -46,9 +45,7 @@ export async function productScope(
   return row
     ? {
         ...row,
-        knowledgeRelease: release
-          ? { id: release.id, name: release.name }
-          : undefined,
+        knowledgeRelease: undefined,
         recommendations: row.recommendations.map((p) => {
           const info = overview
             ? overviewProduct(overview.content, p)

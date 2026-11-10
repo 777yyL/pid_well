@@ -1,3 +1,4 @@
+import { shutdownLangfuse } from "./langfuse.js";
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
@@ -14,6 +15,8 @@ import { AgentRunner } from "./agent.js";
 import { shareRoutes } from "./shares.js";
 import { projectRoutes } from "./projects.js";
 import { knowledgeRoutes } from "./product-knowledge.js";
+import { knowledgeAdminRoutes } from './knowledge-admin.js';
+import { startKnowledgeIndexer } from './knowledge-search.js';
 import { capabilityRoutes } from "./capability-routes.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
@@ -54,6 +57,9 @@ export async function createApp(db: Database, serveWeb = false) {
   });
   const runner = new AgentRunner(db);
   knowledgeRoutes(app, db);
+  knowledgeAdminRoutes(app, db);
+  const stopKnowledgeIndexer = startKnowledgeIndexer(db);
+  app.addHook('onClose', stopKnowledgeIndexer);
   projectRoutes(app, db);
   routes(app, db, runner);
   shareRoutes(app, db);
@@ -72,7 +78,7 @@ export async function createApp(db: Database, serveWeb = false) {
         .code(409)
         .send({ error: "记录已存在，或该项目已有正在执行的任务" });
     if (dbCode === "23503")
-      return reply.code(400).send({ error: "关联记录不存在" });
+      return reply.code(400).send({ error: request.method === 'DELETE' ? '记录仍有关联，请先解除关联或改为停用' : "关联记录不存在或分类不属于该产品版本" });
     const status = (error as { statusCode?: number }).statusCode ?? 500;
     if (status >= 500)
       request.log.error(
@@ -153,7 +159,10 @@ export async function createApp(db: Database, serveWeb = false) {
       app.addHook("onClose", () => vite.close());
     }
   }
-  app.addHook("onClose", async () => runner.close());
+  app.addHook("onClose", async () => {
+    await runner.close();
+    await shutdownLangfuse();
+  });
   return { app, runner };
 }
 async function main() {

@@ -1,7 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { requirementDocumentView } from "../server/requirement-document.js";
-import { wordHtmlLines } from "../server/documents.js";
+import { parseDocument, wordHtmlLines } from "../server/documents.js";
+import ExcelJS from "exceljs";
+
+test("空白 Excel 不应仅凭工作表标题被识别为有效需求文件", async () => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("空白清单");
+  const buffer = () => workbook.xlsx.writeBuffer().then((b) => Buffer.from(b));
+  await assert.rejects(
+    () => buffer().then((b) => parseDocument("empty.xlsx", b)),
+    /未提取到有效文本/,
+  );
+  workbook.addWorksheet("门禁").addRow(["支持跨控制器反潜回"]);
+  assert.deepEqual(await parseDocument("valid.xlsx", await buffer()), [
+    "[工作表：门禁]",
+    "支持跨控制器反潜回",
+  ]);
+});
 
 test("去噪视图保留原文行号，排除目录页码与评分资质，保留混合章节中的真实技术需求", () => {
   const lines = [

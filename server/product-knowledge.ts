@@ -78,6 +78,16 @@ export async function migrateProductKnowledge(db: Database) {
     await tx.query(
       `CREATE TABLE IF NOT EXISTS public.kb_project_releases(project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,release_id uuid NOT NULL REFERENCES public.kb_releases(id))`,
     );
+    await tx.query(`CREATE TABLE IF NOT EXISTS public.kb_product_overviews(
+      product_version_id text PRIMARY KEY REFERENCES public.kb_product_versions(product_version_id) ON DELETE CASCADE,
+      input_hash text NOT NULL,overview jsonb NOT NULL,edited boolean NOT NULL DEFAULT false,
+      updated_at timestamptz NOT NULL DEFAULT now())`);
+    await tx.query('ALTER TABLE public.kb_product_overviews ADD COLUMN IF NOT EXISTS generated_by uuid REFERENCES users(id) ON DELETE SET NULL');
+    await tx.query('ALTER TABLE public.kb_product_overviews ADD COLUMN IF NOT EXISTS generation_error text');
+    await tx.query(`CREATE TABLE IF NOT EXISTS public.kb_index_state(
+      sale_item_id text PRIMARY KEY REFERENCES public.kb_sale_items(sale_item_id) ON DELETE CASCADE,
+      input_hash text NOT NULL DEFAULT '', status text NOT NULL DEFAULT 'pending',
+      error text, updated_at timestamptz NOT NULL DEFAULT now())`);
   });
 }
 export async function getProjectKnowledge(
@@ -259,25 +269,36 @@ export function knowledgeWarnings(data: KnowledgeData) {
     ];
   });
 }
-async function readDraft(db: Database): Promise<KnowledgeData> {
+export async function readDraft(db: Database): Promise<KnowledgeData> {
   const products = await db.query<KnowledgeData["products"][number]>(
     `SELECT * FROM public.kb_products WHERE status='active' ORDER BY product_id`,
   );
   const versions = await db.query<KnowledgeData["versions"][number]>(
-    `SELECT * FROM public.kb_product_versions WHERE status='active' ORDER BY product_version_id`,
+    `SELECT v.* FROM public.kb_product_versions v JOIN public.kb_products p ON p.product_id=v.product_id WHERE v.status='active' AND p.status='active' ORDER BY v.product_version_id`,
   );
   const categories = await db.query<KnowledgeData["categories"][number]>(
     `SELECT * FROM public.kb_categories WHERE product_version_id=ANY($1::text[]) ORDER BY sort_order,category_id`,
     [versions.map((v) => v.product_version_id)],
   );
   const saleItems = await db.query<KnowledgeData["saleItems"][number]>(
-    `SELECT * FROM public.kb_sale_items WHERE status='active' ORDER BY sale_item_id`,
+    `SELECT * FROM public.kb_sale_items WHERE status='active' AND product_version_id=ANY($1::text[]) ORDER BY sale_item_id`,
+    [versions.map(v => v.product_version_id)],
   );
   const dependencies = await db.query<KnowledgeData["dependencies"][number]>(
     `SELECT * FROM public.kb_sale_dependencies WHERE sale_item_id=ANY($1::text[]) ORDER BY dependency_id`,
     [saleItems.map((s) => s.sale_item_id)],
   );
   return { products, versions, categories, saleItems, dependencies };
+}
+// Stable source identity for the live PG provider; no release row is created.
+// Kept UUID-shaped so existing evidence records remain readable.
+export const LIVE_KNOWLEDGE_ID = "00000000-0000-4000-8000-000000000001";
+export async function liveKnowledge(db: Database): Promise<KnowledgeRelease> {
+  const data = await readDraft(db);
+  const overviews = await db.query<import('../shared/product-knowledge.js').ProductOverview>(
+    'SELECT * FROM public.kb_product_overviews',
+  );
+  return { id: LIVE_KNOWLEDGE_ID, live: true, wiki_project_id: 'pg', name: 'PG 实时产品知识库', created_at: '', data, overviews };
 }
 const text = (value: unknown) =>
   typeof value === "string" ? value.trim() : "";
@@ -306,30 +327,9 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
     );
     return { releases, draftCounts: counts };
   });
-  app.post("/api/knowledge/releases", async (request, reply) => {
-    const user = requireAdmin(request);
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const wiki = text(body.wikiProjectId),
-      name = text(body.name);
-    if (!/^[\w-]+$/.test(wiki) || !name || name.length > 200)
-      throw new AppError(422, "知识空间标识或发布名称不合法");
-    return db.transaction(async (tx) => {
-      await tx.query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
-      const data = await readDraft(tx);
-      const issues = validateKnowledge(data);
-      if (issues.length)
-        return reply
-          .code(422)
-          .send({ error: "知识库校验失败：" + issues.join("；"), issues });
-      const id = randomUUID();
-      const [release] = await tx.query<KnowledgeRelease>(
-        `INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING *`,
-        [id, wiki, name, JSON.stringify(data), user.id],
-      );
-      return reply
-        .code(201)
-        .send({ release, warnings: knowledgeWarnings(data) });
-    });
+  app.post("/api/knowledge/releases", async request => {
+    requireAdmin(request);
+    throw new AppError(410,"已取消知识发布，请直接在产品知识库维护 PG 数据");
   });
   app.get("/api/projects/:id/knowledge/catalog", async (request) => {
     const { id } = request.params as { id: string };
@@ -338,9 +338,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
     const offset = page(q.offset, 0, 1000000),
       limit = page(q.limit, 20, 100);
     if (!limit) throw new AppError(422, "limit 必须大于 0");
-    const release =
-      (await getProjectKnowledge(db, id)) ??
-      (await latestKnowledge(db, String(project.wiki_project_id)));
+    const release = await liveKnowledge(db);
     const empty: KnowledgeBrowse = {
       releaseId: null,
       versions: [],
@@ -361,7 +359,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
           p.product_code === text(q.name) ||
           p.name === text(q.name)),
     );
-    if (text(q.path))
+    if (text(q.path) && !text(q.productId) && !text(q.name))
       candidates = candidates.filter(
         (p) =>
           p.source_path === text(q.path) ||
@@ -453,30 +451,7 @@ export function knowledgeRoutes(app: FastifyInstance, db: Database) {
       saleItemId: string;
     };
     const project = await accessProject(db, requireUser(request), id);
-    const bound = await getProjectKnowledge(db, id);
-    const releaseId = text(
-      (request.query as Record<string, unknown>).releaseId,
-    );
-    if (
-      releaseId &&
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-        releaseId,
-      )
-    )
-      throw new AppError(422, "releaseId 格式不合法");
-    if (bound && releaseId && releaseId !== bound.id)
-      throw new AppError(403, "只能访问项目绑定的知识版本");
-    const release =
-      bound ??
-      (releaseId
-        ? (
-            await db.query<KnowledgeRelease>(
-              `SELECT * FROM public.kb_releases WHERE id=$1 AND wiki_project_id=$2`,
-              [releaseId, project.wiki_project_id],
-            )
-          )[0]
-        : await latestKnowledge(db, String(project.wiki_project_id)));
-    if (!release) throw new AppError(404, "知识版本不存在");
+    const release = await liveKnowledge(db);
     const item = release.data.saleItems.find(
       (s) => s.sale_item_id === saleItemId,
     );

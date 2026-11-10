@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep, basename } from "node:path";
 const directory = mkdtempSync(join(tmpdir(), "tender-test-data-"));
 process.env.DATA_DIR = directory;
+// Integration tests must not export company data to a configured collector.
+process.env.LANGFUSE_ENABLED = "false";
 process.env.MAX_AGENT_TURNS = "2";
 process.env.MAX_TOTAL_AGENT_TURNS = "8";
 process.env.MAX_NO_PROGRESS_TURNS = "3";

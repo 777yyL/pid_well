@@ -59,6 +59,7 @@ export function AgentObservation({
     setError("");
     setLoading(true);
     async function poll() {
+      let terminal = false;
       try {
         let after = Math.max(0, ...collected.keys());
         let page;
@@ -72,13 +73,14 @@ export function AgentObservation({
           setEvents([...collected.values()]);
           setStatus(page.run.status);
         } while (page.events.length === 100);
+        terminal = !["queued", "running"].includes(page.run.status);
         setError("");
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       } finally {
         if (!cancelled) {
           setLoading(false);
-          timer = setTimeout(() => void poll(), 4000);
+          if (!terminal) timer = setTimeout(() => void poll(), 4000);
         }
       }
     }
@@ -169,7 +171,7 @@ export function AgentObservation({
         <p style={{ color: "#64748b" }}>
           {loading
             ? "正在加载记录…"
-            : `${status} · ${events.length} 条记录，每 4 秒同步`}{" "}
+            : `${status} · ${events.length} 条记录${["queued", "running"].includes(status) ? "，每 4 秒同步" : "，已完成同步"}`}{" "}
           · 历史任务仅展示已有记录
         </p>
         <Space wrap style={{ marginBottom: 16 }}>

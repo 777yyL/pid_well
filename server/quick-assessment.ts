@@ -1,3 +1,6 @@
+import { loadSemanticSettings } from "./semantic-settings.js";
+import { prepareSemanticCatalog } from "./semantic-catalog.js";
+import { config } from "./config.js";
 import { runEvidencePipeline } from "./assessment-pipeline.js";
 import {
   loadCatalogContext,
@@ -52,11 +55,11 @@ export function judgmentPayload(packets: QuickPacket[]) {
     packets.flatMap((p) => p.candidates.map((c) => [c.snapshotId, c.excerpts])),
   );
   return {
+    evidence,
     requirements: packets.map((p) => ({
       ...p,
       candidates: p.candidates.map(({ excerpts, ...candidate }) => candidate),
     })),
-    evidence,
   };
 }
 const proof = z.object({
@@ -118,7 +121,11 @@ export function parseQuickJudgments(raw: unknown, expected: string[]) {
     throw new Error("批次条款必须完整且唯一");
   return parsed;
 }
-export function planQuickBatches(packets: QuickPacket[], budget: number) {
+export function planQuickBatches(
+  packets: QuickPacket[],
+  budget: number,
+  maxItems = 5,
+) {
   const batches: QuickPacket[][] = [];
   for (const p of packets) {
     if (JSON.stringify(judgmentPayload([p])).length > budget)
@@ -128,7 +135,7 @@ export function planQuickBatches(packets: QuickPacket[], budget: number) {
     const last = batches.at(-1);
     if (
       !last ||
-      last.length >= 5 ||
+      last.length >= maxItems ||
       JSON.stringify(judgmentPayload([...last, p])).length > budget
     )
       batches.push([p]);
@@ -260,6 +267,7 @@ export async function runQuickAssessment(
   emit: (payload: Record<string, unknown>) => Promise<void>,
   budget = 60000,
   select?: CatalogSelector,
+  batchSize = 5,
 ) {
   const scope = await productScope(db, projectId);
   if (scope.status !== "confirmed" || !scope.selected.length) return false;
@@ -437,8 +445,28 @@ export async function runQuickAssessment(
     pending.length && select
       ? await loadCatalogContext(db, projectId, runId, signal)
       : undefined;
+  let semantic: Awaited<ReturnType<typeof prepareSemanticCatalog>> | undefined;
+  const semanticSettings = await loadSemanticSettings(db);
+  if (context) {
+    try {
+      if (semanticSettings.mode !== 'keyword' && (!semanticSettings.enabled || !semanticSettings.baseUrl || !semanticSettings.model))
+        throw new Error("请配置 Embedding 地址和模型");
+      await progress(
+        "retrieving",
+        "正在准备产品范围内的检索索引",
+      );
+      semantic = await prepareSemanticCatalog(db, context, signal);
+    } catch (error) {
+      signal.throwIfAborted();
+      await audit(db, projectId, null, runId, "semantic_fallback", {
+        reason: error instanceof Error ? error.message : "Embedding 不可用",
+      });
+      await progress("retrieving", "语义检索暂不可用，回退完整目录方案");
+    }
+  }
   const selectedBatches = new Map<number, Promise<QuickPacket[]>>();
   const directRequirements = new Set<string>();
+  const semanticRequirements = new Set<string>();
   const prepared =
     pending.length && !context
       ? await prepareSelectedSearch(db, projectId, runId, signal)
@@ -456,25 +484,57 @@ export async function runQuickAssessment(
       );
       try {
         if (context && select) {
-          const batchIndex = Math.floor(pending.indexOf(row) / 5);
+          const batchIndex = Math.floor(pending.indexOf(row) / batchSize);
           let selection = selectedBatches.get(batchIndex);
           if (!selection) {
             const requirements = pending
-              .slice(batchIndex * 5, batchIndex * 5 + 5)
+              .slice(batchIndex * batchSize, batchIndex * batchSize + batchSize)
               .map((r) => r.data);
             const direct = requirements.map((requirement) => ({
               requirement,
               candidates: context.candidates,
               searches: [],
             }));
-            if (JSON.stringify(judgmentPayload(direct)).length <= budget) {
+            if (semantic) {
+              selection = semantic(requirements)
+                .then((packets) => {
+                  packets.forEach((p) =>
+                    semanticRequirements.add(p.requirement.id),
+                  );
+                  packets.filter(p => p.candidates.length === context.candidates.length)
+                    .forEach(p => directRequirements.add(p.requirement.id));
+                  return packets;
+                })
+                .catch(async (error) => {
+                  pipelineSignal.throwIfAborted();
+                  await audit(db, projectId, null, runId, "semantic_fallback", {
+                    requirementIds: requirements.map((r) => r.id),
+                    reason:
+                      error instanceof Error
+                        ? error.message
+                        : "Embedding 不可用",
+                  });
+                  return selectCatalogPackets(
+                    context,
+                    requirements,
+                    select,
+                    pipelineSignal,
+                    budget,
+                  );
+                });
+            } else if (
+              JSON.stringify(judgmentPayload(direct)).length <= budget
+            ) {
               requirements.forEach((r) => directRequirements.add(r.id));
               selection = Promise.resolve(direct);
             } else
               selection = selectCatalogPackets(
                 context,
                 pending
-                  .slice(batchIndex * 5, batchIndex * 5 + 5)
+                  .slice(
+                    batchIndex * batchSize,
+                    batchIndex * batchSize + batchSize,
+                  )
                   .map((r) => r.data),
                 select,
                 pipelineSignal,
@@ -490,9 +550,11 @@ export async function runQuickAssessment(
             query: row.data.raw,
             scopeRevision: context.scopeRevision,
             matchCount: packet.candidates.length,
-            mode: directRequirements.has(row.data.id)
-              ? "catalog_direct"
-              : "catalog_model",
+            mode: semanticRequirements.has(row.data.id)
+              ? semanticSettings.mode
+              : directRequirements.has(row.data.id)
+                ? "catalog_direct"
+                : "catalog_model",
             catalogSize: context.index.length,
           });
           counters.retrieved++;
@@ -566,7 +628,7 @@ export async function runQuickAssessment(
       }
     },
     async (packets, pipelineSignal) => {
-      for (const batch of planQuickBatches(packets, budget)) {
+      for (const batch of planQuickBatches(packets, budget, batchSize)) {
         pipelineSignal.throwIfAborted();
         let done = false;
         let feedback = "";
@@ -592,7 +654,11 @@ export async function runQuickAssessment(
                 (value) =>
                   !directRequirements.has(value.requirementId) &&
                   value.checks.some(
-                    (c) => c.level === "unknown" || c.level === "no_match",
+                    (c) =>
+                      c.level === "unknown" ||
+                      c.level === "no_match" ||
+                      (semanticRequirements.has(value.requirementId) &&
+                        c.level === "partial"),
                   ),
               );
               if (unresolved.length) {
@@ -665,7 +731,11 @@ export async function runQuickAssessment(
                   (p) => p.requirement.id === value.requirementId,
                 )!;
                 for (const check of value.checks.filter(
-                  (c) => c.level === "unknown" || c.level === "no_match",
+                  (c) =>
+                    c.level === "unknown" ||
+                    c.level === "no_match" ||
+                    (semanticRequirements.has(value.requirementId) &&
+                      c.level === "partial"),
                 )) {
                   const child = packet.requirement.subrequirements?.find(
                     (c) => c.id === check.subrequirementId,
@@ -722,7 +792,11 @@ export async function runQuickAssessment(
                 }
                 if (
                   value.checks.some(
-                    (c) => c.level === "unknown" || c.level === "no_match",
+                    (c) =>
+                      c.level === "unknown" ||
+                      c.level === "no_match" ||
+                      (semanticRequirements.has(value.requirementId) &&
+                        c.level === "partial"),
                   )
                 ) {
                   batchStage = "retrieving";
@@ -777,13 +851,61 @@ export async function runQuickAssessment(
             batchStage = "saving";
             batchMessage = `正在校验并保存 ${batch.map((p) => p.requirement.id).join("、")}`;
             await progress("saving", batchMessage);
-            await saveAssessments(db, projectId, items, { runId });
-
-            counters.saved += batch.length;
+            let savedInBatch = 0;
+            for (const item of items) {
+              try {
+                await saveAssessments(db, projectId, [item], { runId });
+                counters.saved++;
+                savedInBatch++;
+              } catch (error) {
+                pipelineSignal.throwIfAborted();
+                const detail = await failure(
+                  [item.requirementId],
+                  "保存校验",
+                  error,
+                  1,
+                  true,
+                );
+                try {
+                  const packet = batch.find(
+                    (p) => p.requirement.id === item.requirementId,
+                  )!;
+                  const [repaired] = parseQuickJudgments(
+                    await invokeJudge([packet], detail, pipelineSignal),
+                    [item.requirementId],
+                  );
+                  const corrected = {
+                    ...buildQuickAssessment(
+                      packet,
+                      repaired,
+                      scope.selected[0],
+                    ),
+                    productScopeRevision: scope.revision,
+                  };
+                  await saveAssessments(db, projectId, [corrected], { runId });
+                  counters.saved++;
+                  savedInBatch++;
+                } catch (repairError) {
+                  pipelineSignal.throwIfAborted();
+                  await failure(
+                    [item.requirementId],
+                    "保存校验",
+                    repairError,
+                    2,
+                    false,
+                  );
+                  counters.failed++;
+                  terminalErrors.push(repairError);
+                }
+              }
+            }
             done = true;
             batchStage = "";
             batchMessage = "";
-            await progress("saving", `本批 ${batch.length} 条已保存`);
+            await progress(
+              "saving",
+              `本批 ${savedInBatch}/${batch.length} 条已保存`,
+            );
           } catch (error) {
             pipelineSignal.throwIfAborted();
             feedback = await failure(
@@ -803,6 +925,7 @@ export async function runQuickAssessment(
         batchMessage = "";
       }
     },
+    { batchSize, concurrency: config.QUICK_CONCURRENCY },
   );
   await progress(
     counters.failed ? "failed" : "completed",

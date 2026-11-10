@@ -8,7 +8,7 @@ import type { KnowledgeData } from "../shared/product-knowledge.js";
 import type { Database } from "../server/db.js";
 import {
   migrateProductKnowledge,
-  knowledgeRoutes,
+  knowledgeRoutes, liveKnowledge,
   getProjectKnowledge,
   bindProjectKnowledge,
   latestKnowledge,
@@ -17,7 +17,7 @@ import {
   validateKnowledge,
 } from "../server/product-knowledge.js";
 
-test("knowledge publishes immutable snapshots, scopes access, browses pages, warns on incomplete data and rejects invalid relations", async () => {
+test("live catalog browses PG data while historical releases remain immutable and data warnings remain available", async () => {
   const engine = new PGlite();
   await engine.waitReady;
   const wrap = (client: any): Database => ({
@@ -84,13 +84,15 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages, war
       };
   });
   knowledgeRoutes(app, db);
-  const publish = () =>
-    app.inject({
-      method: "POST",
-      url: "/api/knowledge/releases",
-      headers: { authorization: "admin" },
-      payload: { wikiProjectId: "space", name: "发布" },
-    });
+  // Historical-release fixture: production publishing is removed; legacy rows stay readable.
+  const publish = async (): Promise<{statusCode:number;json:()=>any;body:string}> => {
+    const data = (await liveKnowledge(db)).data;
+    const issues = validateKnowledge(data);
+    if (issues.length) return {statusCode:422,json:()=>({issues}),body:JSON.stringify(issues)};
+    const release = {id:randomUUID(),wiki_project_id:'space',name:'历史发布',data};
+    await db.query("INSERT INTO kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,$2,$3,$4,$5)",[release.id,'space',release.name,JSON.stringify(data),admin]);
+    return {statusCode:201,json:()=>({release,warnings:knowledgeWarnings(data)}),body:''};
+  };
   assert.equal(
     (await app.inject("/api/knowledge/releases?wikiProjectId=space"))
       .statusCode,
@@ -166,7 +168,7 @@ test("knowledge publishes immutable snapshots, scopes access, browses pages, war
         headers: { authorization: "admin" },
       })
     ).statusCode,
-    403,
+    200,
   );
   await db.query(
     "UPDATE public.kb_sale_items SET specification_md=NULL,module_code=NULL WHERE sale_item_id='s'",

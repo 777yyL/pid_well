@@ -1,6 +1,39 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runEvidencePipeline } from "../server/assessment-pipeline.js";
+import { systemPrompt } from "../server/agent.js";
+
+test("运行时保留严格匹配依据，移除旧的逐条强制复核", async () => {
+  const prompt = await systemPrompt();
+  assert.ok(prompt.includes("严格判断依据"));
+  assert.ok(prompt.includes("复核分层"));
+  assert.ok(!prompt.includes("逐条匹配完成后，必须逐条复核"));
+});
+
+test("可配置批量和并发，输入不重复消费", async () => {
+  let active = 0,
+    peak = 0;
+  const seen: number[] = [];
+  await runEvidencePipeline(
+    Array.from({ length: 32 }, (_, i) => i),
+    new AbortController().signal,
+    async (i) => i,
+    async (batch) => {
+      active++;
+      peak = Math.max(peak, active);
+      assert.ok(batch.length <= 8);
+      await new Promise((r) => setTimeout(r, 5));
+      seen.push(...batch);
+      active--;
+    },
+    { batchSize: 8, concurrency: 2 },
+  );
+  assert.equal(peak, 2);
+  assert.deepEqual(
+    seen.sort((a, b) => a - b),
+    Array.from({ length: 32 }, (_, i) => i),
+  );
+});
 
 test("首批判断不等待全部检索，判断期间检索继续且队列有界", async () => {
   let release!: () => void;

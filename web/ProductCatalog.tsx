@@ -121,7 +121,7 @@ export function ProductCatalog({
         <div>
           <h4>销售项目录</h4>
           <span className="muted">
-            {data?.releaseName || "已发布结构化知识"}
+            {data?.releaseName || "PG 产品知识库"}
           </span>
         </div>
         <Select
@@ -168,9 +168,9 @@ export function ProductCatalog({
           <Spin tip="加载销售项目录" />
         </div>
       ) : !data?.releaseId ? (
-        <Empty description="尚未发布结构化目录，请联系管理员导入并发布知识版本。" />
+        <Empty description="尚无产品数据，请联系管理员维护产品与销售项。" />
       ) : !data.product ? (
-        <Empty description="当前发布版本中未找到该产品目录。" />
+        <Empty description="PG 中未找到该产品目录。" />
       ) : (
         <>
           <div className="catalog-layout">

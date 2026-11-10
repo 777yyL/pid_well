@@ -6,6 +6,7 @@ import {
   Drawer,
   Empty,
   Input,
+  InputNumber,
   Modal,
   Segmented,
   Select,
@@ -27,10 +28,20 @@ import type {
 
 export function CapabilitySearch() {
   const { message } = App.useApp();
-  const [libraries, setLibraries] = useState<{ id: string; name: string }[]>(
-    [],
-  );
-  const [library, setLibrary] = useState("");
+  const libraries = [{ id: "pg", name: "产品销售项知识库" }];
+  const library = "pg";
+  const [mode, setMode] = useState<"keyword" | "vector" | "hybrid">("keyword");
+  const [topK, setTopK] = useState(10);
+  const [minSimilarity, setMinSimilarity] = useState<number | undefined>();
+  const [embeddingEnabled, setEmbeddingEnabled] = useState(false);
+  const [products, setProducts] = useState<
+    { product_id: string; product_code: string }[]
+  >([]);
+  const [versions, setVersions] = useState<
+    { product_version_id: string; product_id: string; version: string }[]
+  >([]);
+  const [productIds, setProductIds] = useState<string[]>([]);
+  const [versionIds, setVersionIds] = useState<string[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -46,18 +57,29 @@ export function CapabilitySearch() {
   const searchRequest = useRef<AbortController | null>(null);
   useEffect(() => {
     const controller = new AbortController();
-    void api<{ projects: { id: string; name: string }[] }>("/wiki/projects", {
-      signal: controller.signal,
-    })
-      .then((value) => {
+    void Promise.all([
+      api<{ products: typeof products; versions: typeof versions }>(
+        "/knowledge/products",
+        { signal: controller.signal },
+      ),
+      api<{
+        enabled: boolean;
+        mode: typeof mode;
+        topK: number;
+        minSimilarity?: number;
+      }>("/knowledge/retrieval-options", { signal: controller.signal }),
+    ])
+      .then(([data, options]) => {
         if (controller.signal.aborted) return;
-        const list = Array.isArray(value.projects) ? value.projects : [];
-        setLibraries(list);
-        setLibrary(list[0]?.id || "");
+        setProducts(data.products);
+        setVersions(data.versions);
+        setMode(options.mode);
+        setTopK(options.topK);
+        setMinSimilarity(options.minSimilarity);
+        setEmbeddingEnabled(options.enabled);
       })
       .catch((e) => {
-        if (!controller.signal.aborted)
-          setError(`知识库列表读取失败：${e.message}`);
+        if (!controller.signal.aborted) setError(e.message);
       });
     return () => {
       controller.abort();
@@ -100,7 +122,14 @@ export function CapabilitySearch() {
     try {
       const value = await api<QuickSearchResponse>("/capability/search", {
         method: "POST",
-        body: JSON.stringify({ wikiProjectId, query: question.trim() }),
+        body: JSON.stringify({
+          query: question.trim(),
+          mode,
+          topK,
+          minSimilarity: minSimilarity ?? null,
+          productIds,
+          versionIds,
+        }),
         signal: controller.signal,
       });
       if (!controller.signal.aborted) setResponse({ ...value, wikiProjectId });
@@ -136,7 +165,7 @@ export function CapabilitySearch() {
           <h1>能力检索</h1>
           <p>输入功能描述，快速查找对应销售项与所属产品。</p>
         </div>
-        <span className="capability-quick-label">LLM Wiki 直接检索</span>
+        <span className="capability-quick-label">PG 产品知识检索</span>
       </header>
       <div className="capability-search-box">
         <Input.TextArea
@@ -159,21 +188,83 @@ export function CapabilitySearch() {
         />
         <div className="capability-search-options">
           <Select
-            aria-label="选择知识库"
-            placeholder="选择知识库"
-            value={library || undefined}
-            onChange={(value) => {
-              searchRequest.current?.abort();
-              setLoading(false);
-              setLibrary(value);
-              setDetail(null);
-              setGraph(null);
-              setResponse(null);
-              setError("");
-            }}
-            style={{ minWidth: 210 }}
-            options={libraries.map((l) => ({ value: l.id, label: l.name }))}
+            aria-label="检索模式"
+            value={mode}
+            onChange={setMode}
+            style={{ width: 150 }}
+            options={[
+              { value: "keyword", label: "关键词检索" },
+              {
+                value: "vector",
+                label: "向量检索",
+                disabled: !embeddingEnabled,
+              },
+              {
+                value: "hybrid",
+                label: "混合检索",
+                disabled: !embeddingEnabled,
+              },
+            ]}
           />
+          <Select
+            aria-label="限定产品"
+            mode="multiple"
+            placeholder="全部产品"
+            value={productIds}
+            style={{ minWidth: 190, maxWidth: 320 }}
+            options={products.map((p) => ({
+              value: p.product_id,
+              label: p.product_code,
+            }))}
+            onChange={(ids) => {
+              setProductIds(ids);
+              setVersionIds([]);
+            }}
+          />
+          <Select
+            aria-label="限定版本"
+            mode="multiple"
+            placeholder="全部版本"
+            value={versionIds}
+            style={{ minWidth: 180, maxWidth: 320 }}
+            options={versions
+              .filter(
+                (v) => !productIds.length || productIds.includes(v.product_id),
+              )
+              .map((v) => ({
+                value: v.product_version_id,
+                label:
+                  (products.find((p) => p.product_id === v.product_id)
+                    ?.product_code ?? "") +
+                  " · " +
+                  v.version,
+              }))}
+            onChange={setVersionIds}
+          />
+          <label>
+            topK{" "}
+            <InputNumber
+              aria-label="返回数量 topK"
+              min={1}
+              max={100}
+              value={topK}
+              onChange={(n) => setTopK(n ?? 10)}
+            />
+          </label>
+          {mode !== "keyword" && (
+            <label>
+              相似度 ≥{" "}
+              <InputNumber
+                aria-label="最低余弦相似度"
+                min={-1}
+                max={1}
+                step={0.05}
+                value={minSimilarity}
+                placeholder="不限"
+                onChange={(n) => setMinSimilarity(n ?? undefined)}
+              />
+            </label>
+          )}
           <Button
             type="primary"
             size="large"
@@ -217,7 +308,11 @@ export function CapabilitySearch() {
             </div>
             <small>
               接口耗时 {(response.elapsedMs / 1000).toFixed(2)} 秒 ·
-              按知识库返回顺序
+              {response.mode === "keyword"
+                ? "关键词排序"
+                : response.mode === "vector"
+                  ? "向量排序"
+                  : "混合排序"}
             </small>
           </div>
           <div className="capability-results">
@@ -243,6 +338,13 @@ export function CapabilitySearch() {
                     </div>
                   )}
                   {result.summary && <p>{result.summary}</p>}
+                  <small className="muted">
+                    {result.category} · 关键词得分 {result.keywordScore ?? 0}
+                    {result.vectorSimilarity != null
+                      ? ` · 余弦相似度 ${result.vectorSimilarity.toFixed(3)}`
+                      : ""}{" "}
+                    · 相关性不代表满足程度
+                  </small>
                 </div>
                 <div className="capability-result-actions">
                   <Button onClick={() => setDetail(result)}>查看原文</Button>
@@ -282,7 +384,15 @@ export function CapabilitySearch() {
           </div>
         )
       )}
-      {graph && response && <WikiGraph key={`${response.wikiProjectId}:${graph.path}`} wikiProjectId={response.wikiProjectId} path={graph.path} title={graph.title} onClose={() => setGraph(null)} />}
+      {graph && response && (
+        <WikiGraph
+          key={`${response.wikiProjectId}:${graph.path}`}
+          wikiProjectId={response.wikiProjectId}
+          path={graph.path}
+          title={graph.title}
+          onClose={() => setGraph(null)}
+        />
+      )}
       <Drawer
         title={detail?.title || "销售项原文"}
         width={760}

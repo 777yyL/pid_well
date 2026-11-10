@@ -1,3 +1,8 @@
+import { knowledgeGraph } from "./knowledge-graph.js";
+import { searchKnowledge, selectedVersionIds } from "./knowledge-search.js";
+import { searchProductOverviews } from "./product-overviews.js";
+import { prepareSemanticCatalog } from "./semantic-catalog.js";
+import { loadSemanticSettings } from "./semantic-settings.js";
 import { Type, type TSchema } from "typebox";
 import { z } from "zod";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -36,7 +41,11 @@ import {
   alternativeSchema,
   recordAlternative,
 } from "./product-search.js";
-import { projectKnowledge, knowledgeContent } from "./structured-knowledge.js";
+import {
+  projectKnowledge,
+  knowledgeContent,
+  knowledgePath,
+} from "./structured-knowledge.js";
 import { loadSettings } from "./settings.js";
 import {
   loadCatalogContext,
@@ -110,14 +119,53 @@ export function createTools(ctx: ToolContext): AgentTool[] {
       projectId,
       args.path === PRODUCT_OVERVIEW_PATH,
     );
+    if (release?.live) {
+      const matching = release.data.saleItems.filter(
+        (s) =>
+          knowledgePath(release.id, "sale-items", s.sale_item_id) ===
+            args.path || s.source_path === args.path,
+      );
+      const [scope] = await db.query<{ status: string }>(
+        "SELECT status FROM product_scopes WHERE project_id=$1",
+        [projectId],
+      );
+      if (
+        scope?.status === "confirmed" &&
+        (matching.length || args.path.includes("/sale-items/"))
+      ) {
+        const versions = await selectedVersionIds(db, projectId, release);
+        if (
+          matching.length !== 1 ||
+          !versions.includes(matching[0].product_version_id)
+        )
+          throw new AppError(403, "销售项不属于已确认产品版本");
+      }
+      if (matching.length === 1)
+        args.path = knowledgePath(
+          release.id,
+          "sale-items",
+          matching[0].sale_item_id,
+        );
+    }
     const structured = release
       ? knowledgeContent(release, args.path)
       : undefined;
-    if (args.path.startsWith("wiki/structured/") && structured === undefined)
+    if (
+      !release?.live &&
+      args.path.startsWith("wiki/structured/") &&
+      structured === undefined
+    )
       throw new AppError(422, "页面不属于本项目固定知识版本");
-    const content =
-      structured ??
-      (await new WikiClient(db, signal).read(p.wiki_project_id, args.path));
+    let content = structured;
+    if (release?.live && content === undefined)
+      throw new AppError(
+        404,
+        "PG 中没有该页面，请使用产品目录返回的销售项路径；历史证据可在评估记录中查看",
+      );
+    content ??= await new WikiClient(db, signal).read(
+      p.wiki_project_id,
+      args.path,
+    );
     const snapshot = await snapshotPage(db, projectId, args.path, content);
     const lines = content.split(/\r?\n/);
     return {
@@ -129,6 +177,74 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     };
   };
   return [
+    tool(
+      "product_search",
+      "检索产品版本概览",
+      "选型阶段按业务模块检索 PG 产品版本概览，获取候选产品、基本信息与能力依据。概览仅用于推荐，仍需核查销售项。产品范围已确认后不可使用此工具扩大范围。",
+      z.object({
+        query: z.string().trim().min(1).max(2000),
+        topK: z.number().int().min(1).max(100).default(10),
+      }),
+      async (args, signal) => {
+        const scope = await productScope(db, projectId);
+        if (scope.status === "confirmed")
+          throw new AppError(409, "产品范围已确认，请在当前范围内检索销售项");
+        return searchProductOverviews(
+          db,
+          args.query,
+          { topK: args.topK },
+          signal,
+        );
+      },
+    ),
+    tool(
+      "assessment_search",
+      "范围内语义混合检索",
+      "根据已保存需求在已确认产品版本中检索候选销售项，返回完整实体证据。优先使用；available=false时回退assessment_catalog和assessment_evidence。检索未命中不等于不支持。",
+      z.object({ requirementIds: z.array(z.string()).min(1).max(10) }),
+      async (args, signal) => {
+        const retrievalConfig = await loadSemanticSettings(db);
+        if (
+          retrievalConfig.mode !== "keyword" &&
+          (!retrievalConfig.enabled ||
+            !retrievalConfig.baseUrl ||
+            !retrievalConfig.model)
+        )
+          return {
+            available: false,
+            reason: "管理员未启用或配置Embedding，请使用目录工具",
+          };
+        const context = await getCatalog(signal);
+        const rows = await db.query<{
+          data: import("../shared/domain.js").RequirementInput;
+        }>(
+          "SELECT data FROM requirements WHERE project_id=$1 AND id=ANY($2::text[])",
+          [projectId, args.requirementIds],
+        );
+        if (rows.length !== new Set(args.requirementIds).size)
+          throw new AppError(422, "需求编号不存在");
+        const search = await prepareSemanticCatalog(
+          db,
+          context,
+          signal ?? new AbortController().signal,
+        );
+        const packets = await search(rows.map((r) => r.data));
+        for (const p of packets)
+          await audit(db, projectId, null, runId, "product_scoped_search", {
+            requirementId: p.requirement.id,
+            query: p.requirement.raw,
+            scopeRevision: context.scopeRevision,
+            mode: retrievalConfig.mode,
+            matchCount: p.candidates.length,
+            paths: p.candidates.map((c) => c.path),
+          });
+        return {
+          available: true,
+          scopeRevision: context.scopeRevision,
+          packets,
+        };
+      },
+    ),
     tool(
       "assessment_catalog",
       "准备产品销售项目录",
@@ -155,7 +271,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     tool(
       "assessment_evidence",
       "准备候选销售项全文",
-      "按assessment_catalog返回的ID为多条需求准备候选完整原文及快照行号，支持多销售项组合。不要只按名称挑选。无匹配或证据不足先复查完整目录，再考虑全局补查。",
+      "按assessment_catalog返回的ID为多条需求准备候选完整原文及快照行号，支持多销售项组合。不要只按名称挑选。无匹配或证据不足只复查已选版本的完整目录，不得全局补查。",
       z.object({
         selections: z
           .array(
@@ -228,7 +344,9 @@ export function createTools(ctx: ToolContext): AgentTool[] {
         return {
           project,
           knowledgeRelease: await projectKnowledge(db, projectId).then((r) =>
-            r ? { id: r.id, name: r.name, createdAt: r.created_at } : null,
+            r && !r.live
+              ? { id: r.id, name: r.name, createdAt: r.created_at }
+              : null,
           ),
           productOverview: {
             path: PRODUCT_OVERVIEW_PATH,
@@ -246,7 +364,7 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             [projectId, runId],
           ),
           searchWorkflow:
-            "确认产品后 assessment_catalog 加载完整产品版本目录，assessment_evidence 批量获取候选全文。不要先走旧关键词检索。证据不足先复查目录，无新增候选不重复判断；范围外结果单列建议。首次判断完成selfReview，保存后仅对get_assessments(unreviewed=true)返回的风险项专项复核。",
+            "确认产品后优先 assessment_search 按需求获取范围内语义混合检索候选，未启用或失败回退 assessment_catalog 与 assessment_evidence。不要先走旧关键词检索。证据不足先复查目录，无新增候选不重复判断；范围外结果单列建议。首次判断完成selfReview，保存后仅对get_assessments(unreviewed=true)返回的风险项专项复核。",
           alternatives: await db.query(
             "SELECT id,data FROM audit_log WHERE project_id=$1 AND action='product_alternative' ORDER BY id DESC LIMIT 100",
             [projectId],
@@ -465,23 +583,22 @@ export function createTools(ctx: ToolContext): AgentTool[] {
             args.subrequirementId,
           );
         }
-        const [p] = await db.query<{ wiki_project_id: string }>(
+        const source = await projectKnowledge(db, projectId);
+        if (source?.live)
+          return searchKnowledge(
+            db,
+            { query: args.query, topK: args.topK, mode: "keyword" },
+            { signal },
+          );
+        const [legacy] = await db.query<{ wiki_project_id: string }>(
           "SELECT wiki_project_id FROM projects WHERE id=$1",
           [projectId],
         );
-        const result = await new WikiClient(db, signal).search(
-          p.wiki_project_id,
+        return new WikiClient(db, signal).search(
+          legacy.wiki_project_id,
           args.query,
           args.topK,
         );
-        const text = JSON.stringify(result);
-        return text.length > 50000
-          ? {
-              truncated: true,
-              result: text.slice(0, 50000),
-              note: "结果过长，请缩小查询并读取实体页",
-            }
-          : result;
       },
     ),
     tool(
@@ -506,8 +623,8 @@ export function createTools(ctx: ToolContext): AgentTool[] {
     ),
     tool(
       "wiki_global_search",
-      "证据不足时全局补查",
-      "仅在同一条款、本次产品范围已完成产品内检索后调用。记录 no_match 或 insufficient_evidence 的具体原因。范围外能力只能单列替代建议，不能直接纳入正式结果。",
+      "历史项目全局补查（PG 项目禁用）",
+      "仅兼容旧 Wiki 项目。PG 项目在产品范围确认后禁止全局检索，需要新增产品时由用户在选型页确认。",
       z.object({
         requirementId: z.string().regex(/^T-\d+$/),
         query: z.string().min(1).max(500),
@@ -557,6 +674,27 @@ export function createTools(ctx: ToolContext): AgentTool[] {
           "SELECT wiki_project_id FROM projects WHERE id=$1",
           [projectId],
         );
+        const source = await projectKnowledge(db, projectId);
+        if (source?.live) {
+          const scope = await productScope(db, projectId);
+          if (scope.status === "confirmed") {
+            const versions = await selectedVersionIds(db, projectId, source);
+            const data = {
+              ...source.data,
+              versions: source.data.versions.filter((v) =>
+                versions.includes(v.product_version_id),
+              ),
+              saleItems: source.data.saleItems.filter((s) =>
+                versions.includes(s.product_version_id),
+              ),
+            };
+            data.products = data.products.filter((p) =>
+              data.versions.some((v) => v.product_id === p.product_id),
+            );
+            return knowledgeGraph({ ...source, data }, args.query, 60);
+          }
+          return knowledgeGraph(source, args.query, 60);
+        }
         return new WikiClient(db, signal).graph(p.wiki_project_id, args.query);
       },
     ),

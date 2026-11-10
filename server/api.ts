@@ -1,3 +1,10 @@
+import {
+  loadSemanticSettings,
+  semanticSettingsView,
+  saveSemanticSettings,
+  resolveSemanticSettings,
+} from "./semantic-settings.js";
+import { requestEmbeddings } from "./semantic-catalog.js";
 import { redactObservation } from "./observation.js";
 import { projectKnowledge, overviewMarkdown } from "./structured-knowledge.js";
 import type { FastifyInstance } from "fastify";
@@ -195,6 +202,40 @@ export function routes(
     await audit(db, null, user.id, null, "agent_settings_changed", {});
     return settingsView(db, user.id);
   });
+  app.get("/api/settings/semantic", async (request) => {
+    requireAdmin(request);
+    return semanticSettingsView(await loadSemanticSettings(db));
+  });
+  app.put("/api/settings/semantic", async (request) => {
+    const user = requireAdmin(request);
+    const result = await saveSemanticSettings(db, request.body);
+    await audit(db, null, user.id, null, "semantic_settings_changed", {});
+    return result;
+  });
+  app.post("/api/settings/semantic/test", async (request) => {
+    requireAdmin(request);
+    const settings = await resolveSemanticSettings(db, request.body);
+    if (!settings.baseUrl || !settings.model)
+      throw new AppError(422, "请填写 Embedding 地址和模型");
+    const started = Date.now();
+    try {
+      const vectors = await requestEmbeddings(
+        ["访客预约审批后刷脸通行"],
+        new AbortController().signal,
+        settings,
+      );
+      return {
+        ok: true,
+        dimensions: vectors[0].length,
+        elapsedMs: Date.now() - started,
+      };
+    } catch {
+      throw new AppError(
+        422,
+        "Embedding 连接测试失败，请检查地址、模型、密钥及接口兼容性",
+      );
+    }
+  });
   app.get("/api/settings/wiki", async (request) => {
     requireAdmin(request);
     return wikiSettingsView(db);
@@ -287,7 +328,7 @@ export function routes(
         description: z.string().max(5000).default(""),
       })
       .parse(request.body);
-    const wikiProjectId = await defaultWikiProject(db);
+    const wikiProjectId = "pg";
     const id = randomUUID();
     await db.query(
       "INSERT INTO projects(id,name,description,wiki_project_id,owner_id) VALUES($1,$2,$3,$4,$5)",
@@ -534,7 +575,7 @@ export function routes(
       .object({ after: z.coerce.number().int().min(0).default(0) })
       .parse(request.query);
     const events = await db.query(
-      "SELECT id,type,payload,created_at FROM run_events WHERE run_id=$1 AND id>$2 ORDER BY id LIMIT 200",
+      "SELECT id,type,payload,created_at FROM run_events WHERE run_id=$1 AND id>$2 AND type NOT IN ('model_request','model_response') ORDER BY id LIMIT 200",
       [id, query.after],
     );
     return { run, events };

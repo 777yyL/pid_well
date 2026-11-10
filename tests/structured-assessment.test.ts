@@ -1,3 +1,4 @@
+import { LIVE_KNOWLEDGE_ID } from "../server/product-knowledge.js";
 import { WikiClient } from "../server/wiki.js";
 import { runQuickAssessment } from "../server/quick-assessment.js";
 import { test } from "node:test";
@@ -27,7 +28,7 @@ import type {
 } from "../shared/product-knowledge.js";
 import type { AssessmentInput } from "../shared/domain.js";
 
-test("结构化评估：固定发布、按版本检索、稳定ID入库和采购汇总，历史项目不切换", async () => {
+test("PG实时评估：不依赖发布、范围内检索、稳定ID入库和采购汇总", async () => {
   const db = await openDatabase("", "memory://");
   const originalSearch = WikiClient.prototype.search;
   const scopes: string[][] = [];
@@ -112,7 +113,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       saleItems: await db.query("SELECT * FROM public.kb_sale_items"),
       dependencies: [],
     };
-    const releaseId = randomUUID();
+    const releaseId = LIVE_KNOWLEDGE_ID;
     await db.query(
       "INSERT INTO public.kb_releases(id,wiki_project_id,name,data,created_by) VALUES($1,'structured','首版',$2,$3)",
       [releaseId, JSON.stringify(data), uid],
@@ -485,8 +486,8 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       "T-1.1",
     );
     assert.equal(result.results.length, 1);
-    assert.deepEqual(scopes[0], ["wiki/entities/sale-items/video-v1.md"]);
-    assert.equal("mode" in result && result.mode, "structured_wiki_scoped");
+    assert.equal(scopes.length, 0, "PG 检索不应调用 Wiki");
+    assert.equal("mode" in result && result.mode, "keyword");
     assert.ok(!JSON.stringify(result).includes("UNTRUSTED LIVE CONTENT"));
     const hit = result.results[0];
     assert.equal("saleItemId" in hit && hit.saleItemId, "s1");
@@ -498,7 +499,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       read.execute("foreign", {
         path: knowledgePath(nextId, "sale-items", "s1"),
       }),
-      /固定知识版本/,
+      /不属于已确认产品版本/,
     );
     const nested = structuredClone(data.saleItems[0]);
     nested.specification_md =
@@ -583,10 +584,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       incomplete,
       incomplete.data.saleItems[0],
     );
-    await db.query("UPDATE public.kb_releases SET data=$2::jsonb WHERE id=$1", [
-      releaseId,
-      JSON.stringify(incomplete.data),
-    ]);
+    await db.query("UPDATE kb_sale_items SET specification_md=NULL,description='支持实时预览' WHERE sale_item_id='s1'");
     await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
       hit.snapshotId,
       incompleteContent,
@@ -606,10 +604,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       saveAssessments(db, pid, [unsupported], {}),
       /技术规格待确认/,
     );
-    await db.query("UPDATE public.kb_releases SET data=$2::jsonb WHERE id=$1", [
-      releaseId,
-      JSON.stringify((pinned as KnowledgeRelease).data),
-    ]);
+    await db.query("UPDATE kb_sale_items SET specification_md='支持实时预览',description=NULL WHERE sale_item_id='s1'");
     await db.query("UPDATE snapshots SET content=$2 WHERE id=$1", [
       hit.snapshotId,
       content,
@@ -663,7 +658,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
         page,
         "v2",
       ),
-      /固定发布版本/,
+      /已确认产品版本/,
     );
     const pages = await db.query<{
       id: string;
@@ -749,41 +744,9 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
     }>("SELECT manifest FROM artifacts WHERE id=$1", [report.id]);
     assert.equal(artifact.manifest.sales[0].saleItemId, "s1");
     assert.equal(artifact.manifest.sales[0].knowledgeReleaseId, releaseId);
-    const fallback = await searchGlobalFallback(db, pid, rid, {
-      requirementId: "T-1",
-      query: "实时预览",
-      topK: 5,
-      reason: "insufficient_evidence",
-      explanation: "现有候选参数仍需补查其他版本能力",
-    });
-    assert.equal(fallback.stage, "global_fallback");
-    assert.ok("results" in fallback);
-    const other = ("results" in fallback ? fallback.results : []).find(
-      (r) => "saleItemId" in r && r.saleItemId === "s2",
-    )!;
-    assert.ok(other, "固定发布版本内全局补查可以找到未选版本");
-    const otherContent = saleMarkdown(
-      pinned as KnowledgeRelease,
-      data.saleItems[1],
-    );
-    const otherLine =
-      otherContent.split("\n").findIndex((l) => l === "支持实时预览") + 1;
-    await recordAlternative(db, pid, rid, {
-      requirementId: "T-1",
-      product: {
-        name: "产品A",
-        version: "v2",
-        path: knowledgePath(releaseId, "products", "p"),
-      },
-      sales: "视频监控",
-      reason: "其他版本有实时预览原文，可以核实后追加选择",
-      evidence: {
-        snapshotId: other.snapshotId,
-        lineStart: otherLine,
-        lineEnd: otherLine,
-        quote: "支持实时预览",
-      },
-    });
+    await assert.rejects(searchGlobalFallback(db,pid,rid,{
+      requirementId:'T-1',query:'实时预览',topK:5,reason:'insufficient_evidence',explanation:'需要核实其他产品的能力',
+    }), /禁止全局补查/);
     const fresh = randomUUID();
     await db.query(
       "INSERT INTO projects(id,name,wiki_project_id,owner_id) VALUES($1,'未确认','structured',$2)",
@@ -798,9 +761,9 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       /刷新/,
     );
     assert.equal(
-      await projectKnowledge(db, fresh),
-      null,
-      "过期确认不能永久绑定",
+      (await db.query("SELECT * FROM kb_project_releases WHERE project_id=$1",[fresh])).length,
+      0,
+      "PG实时数据无需绑定发布版本",
     );
     await assert.rejects(
       selectProducts(db, fresh, uid, {
@@ -811,9 +774,9 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       /未唯一定位/,
     );
     assert.equal(
-      await projectKnowledge(db, fresh),
-      null,
-      "无效产品导致确认失败应回滚绑定",
+      (await db.query("SELECT * FROM kb_project_releases WHERE project_id=$1",[fresh])).length,
+      0,
+      "无效产品不能创建发布绑定",
     );
     const old = randomUUID();
     await db.query(
@@ -824,7 +787,7 @@ test("结构化评估：固定发布、按版本检索、稳定ID入库和采购
       "INSERT INTO product_scopes(project_id,status) VALUES($1,'legacy')",
       [old],
     );
-    assert.equal(await projectKnowledge(db, old, true), null);
+    assert.equal((await projectKnowledge(db, old, true))?.live, true);
   } finally {
     WikiClient.prototype.search = originalSearch;
     await db.close();

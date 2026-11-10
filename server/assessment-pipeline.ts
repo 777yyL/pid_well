@@ -1,9 +1,10 @@
-// Two retrieval workers feed one model consumer. Backpressure bounds prepared evidence.
+// Two preparation workers feed bounded model consumers; backpressure bounds evidence.
 export async function runEvidencePipeline<T, P>(
   inputs: T[],
   signal: AbortSignal,
   prepare: (input: T, signal: AbortSignal) => Promise<P | null>,
   consume: (batch: P[], signal: AbortSignal) => Promise<void>,
+  options = { batchSize: 5, concurrency: 1 },
 ) {
   const control = new AbortController();
   const combined = AbortSignal.any([signal, control.signal]);
@@ -21,7 +22,7 @@ export async function runEvidencePipeline<T, P>(
   const workers = Array.from({ length: active }, async () => {
     try {
       while (cursor < inputs.length) {
-        while (queue.length >= 10) {
+        while (queue.length >= options.batchSize * 2) {
           combined.throwIfAborted();
           await changed();
         }
@@ -41,18 +42,30 @@ export async function runEvidencePipeline<T, P>(
       notify();
     }
   });
-  try {
-    while (active || queue.length) {
+  const consumers = Array.from({ length: options.concurrency }, async () => {
+    try {
+      while (active || queue.length) {
+        if (fatal) throw fatal;
+        combined.throwIfAborted();
+        if (queue.length >= options.batchSize || (!active && queue.length)) {
+          const batch = queue.splice(0, options.batchSize);
+          notify();
+          await consume(batch, combined);
+        } else await changed();
+      }
       if (fatal) throw fatal;
       combined.throwIfAborted();
-      if (queue.length >= 5 || (!active && queue.length)) {
-        const batch = queue.splice(0, 5);
-        notify();
-        await consume(batch, combined);
-      } else await changed();
+    } catch (error) {
+      fatal ??= error;
+      control.abort();
+      throw error;
     }
+  });
+  try {
+    const results = await Promise.allSettled(consumers);
     if (fatal) throw fatal;
-    combined.throwIfAborted();
+    for (const result of results)
+      if (result.status === "rejected") throw result.reason;
   } finally {
     control.abort();
     notify();

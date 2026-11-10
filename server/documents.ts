@@ -81,13 +81,15 @@ export async function parseDocument(
     for (const sheet of workbook.worksheets) {
       if (sheet.state !== "visible" || /Wps|Reserved/i.test(sheet.name))
         continue;
-      lines.push(`[工作表：${sheet.name}]`);
+      const sheetLines: string[] = [];
       sheet.eachRow((row) => {
         const cells: string[] = [];
         row.eachCell({ includeEmpty: true }, (cell) => cells.push(cell.text));
         const text = cells.join(" | ");
-        if (text.replace(/[|\s]/g, "")) lines.push(text);
+        if (text.replace(/[|\s]/g, "")) sheetLines.push(text);
       });
+      if (sheetLines.length)
+        lines.push(`[工作表：${sheet.name}]`, ...sheetLines);
     }
   } else if (extension === ".pdf") {
     const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");

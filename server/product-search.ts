@@ -1,3 +1,4 @@
+import { searchKnowledge } from "./knowledge-search.js";
 import { posix } from "node:path";
 import { z } from "zod";
 import { parse as parseYaml } from "yaml";
@@ -289,7 +290,7 @@ export async function readCatalogPage(
   const byPath = new Map(cachedPages.map((page) => [page.path, page]));
   const missingPages: { path: string; content: string }[] = [];
   // Wiki reads are bounded; structured release content needs no external requests.
-  const missingPaths = requested.filter((path) => !byPath.has(path));
+  const missingPaths = requested.filter((path) => !!release?.live || !byPath.has(path));
   for (let start = 0; start < missingPaths.length; start += 4) {
     signal?.throwIfAborted();
     missingPages.push(
@@ -567,78 +568,15 @@ async function searchStructured(
   const started = Date.now(),
     tokens = retrievalTokens(query);
   const allowed = new Set(catalog.products.flatMap((p) => p.paths));
-  const keywordRank = () =>
-    release.data.saleItems
-      .flatMap((s) => {
-        const path = knowledgePath(release.id, "sale-items", s.sale_item_id);
-        if (!allowed.has(path)) return [];
-        const text = [
-          s.name,
-          s.module_code,
-          s.description,
-          s.specification_md,
-          s.prerequisites,
-          s.limitations,
-        ]
-          .join(" ")
-          .toLowerCase();
-        const score = tokens.reduce(
-          (n, t) =>
-            n +
-            (text.includes(t)
-              ? t.length * (s.name.toLowerCase().includes(t) ? 4 : 1)
-              : 0),
-          0,
-        );
-        return score ? [{ sale: s, path, score }] : [];
-      })
-      .sort((a, b) => b.score - a.score);
-  const scopedSales = release.data.saleItems.filter((sale) =>
-    allowed.has(knowledgePath(release.id, "sale-items", sale.sale_item_id)),
-  );
-  const sources = new Map<string, typeof scopedSales>();
-  for (const sale of scopedSales) {
-    const paths = wikiFilePaths(sale.source_path);
-    if (paths.length !== 1 || paths[0].startsWith("wiki/structured/")) continue;
-    sources.set(paths[0], [...(sources.get(paths[0]) ?? []), sale]);
-  }
-  let mode = "structured_keyword";
-  let ranked: ReturnType<typeof keywordRank> = [];
-  let retrievalNote = "没有可用 source_path，使用固定发布数据关键词召回。";
-  if (sources.size) {
-    const { wiki, wikiId } = await boundWiki(db, projectId, signal);
-    const sourcePaths = [...sources.keys()].sort();
-    const cacheKey = JSON.stringify([
-      wikiId,
-      release.id,
-      sourcePaths,
-      query,
-      topK,
-    ]);
-    let recall = recallCache.get(cacheKey);
-    if (!recall) {
-      recall = wiki.search(wikiId, query, topK, false, sourcePaths);
-      recallCache.set(cacheKey, recall);
-    }
-    const response = await recall;
-    if (!Array.isArray(response.results))
-      throw new AppError(502, "知识库搜索响应缺少 results 字段");
-    ranked = response.results.flatMap((value: unknown) => {
-      const hit = value as Record<string, unknown>;
-      const paths = wikiFilePaths(hit.path ?? hit.filePath ?? hit.file_path);
-      if (paths.length !== 1)
-        throw new AppError(502, "知识库搜索结果缺少可识别路径");
-      const sales = sources.get(paths[0]);
-      if (!sales) throw new AppError(502, "知识库返回范围外搜索结果");
-      return sales.map((sale) => ({
-        sale,
-        path: knowledgePath(release.id, "sale-items", sale.sale_item_id),
-        score: typeof hit.score === "number" ? hit.score : 0,
-      }));
-    });
-    mode = "structured_wiki_scoped";
-    retrievalNote = `Wiki 范围召回；证据仅使用固定发布数据。${scopedSales.length - [...sources.values()].flat().length} 项缺少可用 source_path；共享来源的销售项分别保留发布版本身份。`;
-  } else ranked = keywordRank();
+  const response = await searchKnowledge(db, { query, topK, includeContent: true }, {
+    projectId, source: release, signal, allowedPaths: allowed,
+  });
+  const ranked = response.results.map(hit => ({
+    sale: release.data.saleItems.find(s => s.sale_item_id === hit.saleItemId)!,
+    path: hit.path, score: hit.score, keywordScore: hit.keywordScore, vectorSimilarity: hit.vectorSimilarity,
+  }));
+  const mode = response.mode;
+  const retrievalNote = "PG 产品版本范围内检索；分数为相关性，不表示满足程度。";
   const results = [];
   for (const hit of ranked.slice(0, topK)) {
     const page = await snapshotPage(
@@ -655,6 +593,8 @@ async function searchStructured(
       saleItemId: hit.sale.sale_item_id,
       knowledgeReleaseId: release.id,
       score: hit.score,
+      keywordScore: hit.keywordScore,
+      vectorSimilarity: hit.vectorSimilarity,
       products: catalog.products
         .filter((p) => p.paths.includes(page.path))
         .map((p) => p.choice),
@@ -801,6 +741,7 @@ export async function searchGlobalFallback(
       "产品内已有候选，应先核实候选；证据不足时明确记录不足原因",
     );
   const release = await projectKnowledge(db, projectId);
+  if (release?.live) throw new AppError(409, "产品范围确认后禁止全局补查；请在选型页确认新增产品后再检索");
   if (release) {
     const products = release.data.versions.map((v) => {
       const p = release.data.products.find(
@@ -948,9 +889,9 @@ export async function validateCatalogSale(
       !sale ||
       sale.product_version_id !== version.product_version_id ||
       !sameVersion(version.version, itemVersion) ||
-      saleMarkdown(release, sale) !== page.content
+      (!release.live && saleMarkdown(release, sale) !== page.content)
     )
-      throw new AppError(422, "销售项或证据不属于本项目固定发布版本");
+      throw new AppError(422, "销售项或证据不属于已确认产品版本");
     return;
   }
   const entity = parseSaleEntity(page.content);

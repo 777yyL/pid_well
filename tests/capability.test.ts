@@ -239,30 +239,15 @@ test("能力检索全链路：异步候选、证据核验、追问、项目候�
     return response.json().id as string;
   };
   try {
-    await t.test("快速检索只调用搜索接口，不调用模型、文件清单、图谱或逐页读取", async () => {
-      const before = [fileLists, pageReads, graphReads, modelInputs.length];
-      const result = await app.inject({ method: "POST", url: "/api/capability/search", headers, payload: { wikiProjectId: "wiki", query: "人脸通行" } });
-      assert.equal(result.statusCode, 200, result.body);
-      assert.equal(result.json().results[0].path, sale);
-      assert.deepEqual([fileLists, pageReads, graphReads, modelInputs.length], before);
-      const graph = await app.inject({ method:"POST",url:"/api/capability/graph",headers,payload:{wikiProjectId:"wiki",query:"门禁 & 通行",nodeType:"entity",limit:60} });
-      assert.equal(graph.statusCode,200,graph.body);
-      assert.equal(graph.json().edges.length,1);
-      assert.equal(graphReads,before[2]+1);
-      assert.deepEqual([fileLists,pageReads,modelInputs.length],[before[0],before[1],before[3]]);
-      assert.equal(graphQuery.q,"门禁 & 通行");
-      assert.equal(graphQuery.nodeType,"entity");
-      assert.equal(graphQuery.limit,"60");
-      const source = await app.inject({ method: "POST", url: "/api/capability/source", headers, payload: { wikiProjectId: "wiki", path: sale } });
-      assert.equal(source.statusCode, 200);
-      assert.equal(source.json().content, content);
-      assert.equal(pageReads, before[1] + 1);
-      const denied = await app.inject({ method: "POST", url: "/api/capability/search", payload: { wikiProjectId: "wiki", query: "人脸通行" } });
-      assert.equal(denied.statusCode, 403); // Unauthenticated POST is rejected by CSRF before route auth.
-      broken = true;
-      const failed = await app.inject({ method: "POST", url: "/api/capability/search", headers, payload: { wikiProjectId: "wiki", query: "人脸通行" } });
-      assert.equal(failed.statusCode, 502);
-      broken = false;
+    await t.test("新快速检索使用PG，不调用旧Wiki接口或模型",async()=>{
+      const before=[fileLists,pageReads,graphReads,modelInputs.length];
+      const result=await app.inject({method:'POST',url:'/api/capability/search',headers,payload:{query:'人脸通行',mode:'keyword'}});
+      assert.equal(result.statusCode,200,result.body);assert.deepEqual(result.json().results,[]);
+      const graph=await app.inject({method:'POST',url:'/api/capability/graph',headers,payload:{query:'门禁',limit:60}});
+      assert.equal(graph.statusCode,200,graph.body);assert.equal(graph.json().edges.length,0);
+      const source=await app.inject({method:'POST',url:'/api/capability/source',headers,payload:{path:sale}});assert.equal(source.statusCode,404);
+      assert.deepEqual([fileLists,pageReads,graphReads,modelInputs.length],before);
+      const denied=await app.inject({method:'POST',url:'/api/capability/search',payload:{query:'人脸通行'}});assert.equal(denied.statusCode,403);
     });
     const unauthorized = await app.inject({
       method: "GET",

@@ -5,6 +5,12 @@ export type QuickSearchResult = {
   version: string;
   moduleId: string;
   summary: string;
+  saleItemId?: string;
+  productId?: string;
+  category?: string;
+  score?: number;
+  keywordScore?: number;
+  vectorSimilarity?: number | null;
 };
 export type QuickSearchResponse = {
   results: QuickSearchResult[];

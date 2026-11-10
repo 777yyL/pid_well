@@ -81,6 +81,8 @@ export async function openDatabase(
   };
 }
 const migrations = [
+  `CREATE TABLE IF NOT EXISTS semantic_settings (id integer PRIMARY KEY CHECK(id=1), value jsonb NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS embedding_cache (cache_key text PRIMARY KEY, embedding jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, username text UNIQUE NOT NULL, display_name text NOT NULL, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('admin','member')), active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS sessions (hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id), expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
@@ -165,9 +167,10 @@ export async function audit(
   );
   // pg returns bigserial as a string; PGlite returns a number.
   const raw = row?.id;
-  const id = typeof raw === "number" || (typeof raw === "string" && /^\d+$/.test(raw))
-    ? Number(raw)
-    : NaN;
+  const id =
+    typeof raw === "number" || (typeof raw === "string" && /^\d+$/.test(raw))
+      ? Number(raw)
+      : NaN;
   if (!Number.isSafeInteger(id) || id <= 0)
     throw new Error("审计记录 ID 无效或超出安全整数范围");
   return id;

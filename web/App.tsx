@@ -82,7 +82,12 @@ function AuthenticatedApp() {
     );
   if (!auth.user)
     return <Auth setup={auth.needsSetup} onSuccess={() => void load()} />;
-  return <WorkspaceShell user={auth.user} onLogout={() => void load()} />;
+  return (
+    <WorkspaceShell
+      user={auth.user}
+      onLogout={() => setAuth({ user: null, needsSetup: false })}
+    />
+  );
 }
 function WorkspaceShell({
   user,
@@ -107,6 +112,7 @@ function WorkspaceShell({
   });
   const [teamOpen, setTeamOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const upload = useRef<(() => void) | null>(null);
   const guideView = useRef<((tab: string) => void) | null>(null);
@@ -122,11 +128,15 @@ function WorkspaceShell({
     void loadSettings();
   }, []);
   async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
     try {
       await post("/auth/logout");
       onLogout();
     } catch (e) {
       message.error((e as Error).message);
+    } finally {
+      setLoggingOut(false);
     }
   }
   const conversation = state.workspace?.conversations.find(
@@ -284,6 +294,15 @@ function WorkspaceShell({
               <TeamOutlined />
               <span>团队与成员</span>
             </button>
+            <button
+              aria-label="退出登录"
+              title="退出登录"
+              disabled={loggingOut}
+              onClick={() => void logout()}
+            >
+              <LogoutOutlined />
+              <span>{loggingOut ? "正在退出…" : "退出登录"}</span>
+            </button>
           </nav>
           <Dropdown
             trigger={["click"]}
@@ -296,7 +315,12 @@ function WorkspaceShell({
                   icon: <SettingOutlined />,
                 },
                 { type: "divider" },
-                { key: "logout", label: "退出登录", icon: <LogoutOutlined /> },
+                {
+                  key: "logout",
+                  label: loggingOut ? "正在退出…" : "退出登录",
+                  disabled: loggingOut,
+                  icon: <LogoutOutlined />,
+                },
               ],
               onClick: ({ key }) => {
                 if (key === "account") setAccountOpen(true);

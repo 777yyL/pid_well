@@ -10,6 +10,7 @@ import {
   Space,
   Tag,
   Tabs,
+  Select,
 } from "antd";
 import type { ProductScope, ProductAlternative } from "../shared/domain";
 import { api } from "./api";
@@ -70,6 +71,28 @@ export function ProductSelection({
 }) {
   const [form] = Form.useForm();
   const [selectionTab, setSelectionTab] = useState("recommended");
+  const [library, setLibrary] = useState<{
+    products: { product_id: string; product_code: string; name: string }[];
+    versions: {
+      product_id: string;
+      product_version_id: string;
+      version: string;
+    }[];
+  }>({ products: [], versions: [] });
+  const [libraryError, setLibraryError] = useState("");
+  const [manualDetail, setManualDetail] = useState<{
+    name: string;
+    version: string;
+  } | null>(null);
+  useEffect(() => {
+    const c = new AbortController();
+    void api<typeof library>("/knowledge/products", { signal: c.signal })
+      .then(setLibrary)
+      .catch((e) => {
+        if (!c.signal.aborted) setLibraryError(e.message);
+      });
+    return () => c.abort();
+  }, [projectId]);
   const customProducts: { name?: string; version?: string }[] =
     Form.useWatch("custom", form) ?? [];
   const autoPlanRequests = useRef(new Set<string>());
@@ -657,29 +680,70 @@ export function ProductSelection({
                           >
                             <Form.Item
                               name={[field.name, "name"]}
-                              label="自定义产品名称"
+                              label="选择产品"
                               rules={[
                                 { required: true, message: "请输入产品名称" },
                               ]}
                             >
-                              <Input maxLength={200} />
+                              <Select
+                                showSearch
+                                optionFilterProp="label"
+                                options={library.products.map((p) => ({
+                                  value: p.product_code,
+                                  label: p.product_code + " · " + p.name,
+                                }))}
+                                onChange={() => {
+                                  form.setFieldValue(
+                                    ["custom", field.name, "version"],
+                                    undefined,
+                                  );
+                                  form.setFieldValue(
+                                    ["custom", field.name, "path"],
+                                    "",
+                                  );
+                                }}
+                              />
                             </Form.Item>
                             <Space wrap>
                               <Form.Item
                                 name={[field.name, "version"]}
-                                label="版本（可选）"
+                                label="产品版本"
+                                rules={[
+                                  { required: true, message: "请选择产品版本" },
+                                ]}
                               >
-                                <Input maxLength={100} />
-                              </Form.Item>
-                              <Form.Item
-                                name={[field.name, "path"]}
-                                label="产品页路径（可选）"
-                              >
-                                <Input
-                                  placeholder="wiki/entities/products/product.md"
-                                  maxLength={500}
+                                <Select
+                                  style={{ minWidth: 200 }}
+                                  placeholder="选择版本"
+                                  options={library.versions
+                                    .filter(
+                                      (v) =>
+                                        v.product_id ===
+                                        library.products.find(
+                                          (p) =>
+                                            p.product_code ===
+                                            customProducts[field.name]?.name,
+                                        )?.product_id,
+                                    )
+                                    .map((v) => ({
+                                      value: v.version,
+                                      label: v.version,
+                                    }))}
                                 />
                               </Form.Item>
+                              <Button
+                                disabled={!customProducts[field.name]?.version}
+                                onClick={() =>
+                                  setManualDetail(
+                                    customProducts[field.name] as {
+                                      name: string;
+                                      version: string;
+                                    },
+                                  )
+                                }
+                              >
+                                按分类查看销售项
+                              </Button>
                             </Space>
                             <Button
                               type="text"
@@ -696,19 +760,43 @@ export function ProductSelection({
                             add({ name: "", version: "", path: "" })
                           }
                         >
-                          添加自定义产品
+                          添加产品
                         </Button>
                       </>
                     )}
                   </Form.List>
+                  {libraryError && (
+                    <Alert
+                      type="error"
+                      message={`产品列表加载失败：${libraryError}`}
+                    />
+                  )}
                   <p className="muted">
-                    可从候选产品中逐个选择，也可添加自定义产品。销售项将在确认范围后核实。
+                    从 PG 产品档案选择产品及版本，可先查看销售项再确认范围。
                   </p>
                 </>
               ),
             },
           ]}
         />
+        <Modal
+          title={
+            manualDetail
+              ? `${manualDetail.name} · ${manualDetail.version}`
+              : "销售项目录"
+          }
+          open={!!manualDetail}
+          footer={null}
+          onCancel={() => setManualDetail(null)}
+          width={960}
+        >
+          {manualDetail && (
+            <ProductCatalog
+              projectId={projectId}
+              product={{ ...manualDetail, path: "" }}
+            />
+          )}
+        </Modal>
         <div className="selection-confirm-bar">
           <div>
             <b aria-live="polite" aria-atomic="true">

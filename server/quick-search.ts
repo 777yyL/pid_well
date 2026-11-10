@@ -1,3 +1,7 @@
+import { liveKnowledge } from './product-knowledge.js';
+import { knowledgeContent } from './structured-knowledge.js';
+import { knowledgeSearchSchema, searchKnowledge } from './knowledge-search.js';
+import { knowledgeGraph } from './knowledge-graph.js';
 import type { FastifyInstance } from "fastify";
 import type { Database } from "./db.js";
 import { z } from "zod";
@@ -52,49 +56,20 @@ export function quickSearchResults(
 }
 
 export function quickSearchRoutes(app: FastifyInstance, db: Database) {
-  app.post("/api/capability/graph", async request => {
+  app.post('/api/capability/search', {config:{rateLimit:{max:60,timeWindow:'1 minute'}}},async request => {
     requireUser(request);
-    const input = z.object({ wikiProjectId: z.string().trim().min(1).max(500), query: z.string().trim().max(500).default(""), limit: z.number().int().min(1).max(80).default(40), nodeType: z.string().trim().max(50).optional() }).parse(request.body);
-    return normalizeWikiGraph(await new WikiClient(db).graph(input.wikiProjectId, input.query, input), input.limit);
+    return searchKnowledge(db,knowledgeSearchSchema.parse(request.body));
   });
-  app.post(
-    "/api/capability/search",
-    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
-    async (request) => {
-      requireUser(request);
-      const input = z
-        .object({
-          wikiProjectId: z.string().trim().min(1).max(500),
-          query: z.string().trim().min(1).max(2000),
-        })
-        .parse(request.body);
-      const started = Date.now();
-      const result = await new WikiClient(db).search(
-        input.wikiProjectId,
-        input.query,
-        30,
-      );
-      return {
-        results: quickSearchResults(result),
-        query: input.query,
-        mode: typeof result.mode === "string" ? result.mode : "",
-        elapsedMs: Date.now() - started,
-      };
-    },
-  );
-  app.post("/api/capability/source", async (request) => {
+  app.post('/api/capability/source',async request => {
     requireUser(request);
-    const input = z
-      .object({
-        wikiProjectId: z.string().trim().min(1).max(500),
-        path: z
-          .string()
-          .regex(/^wiki\/(?!.*(?:\.\.|\\))[^?#]+\.md$/),
-      })
-      .parse(request.body);
-    return {
-      path: input.path,
-      content: await new WikiClient(db).read(input.wikiProjectId, input.path),
-    };
+    const input = z.object({path:z.string().min(1).max(2000)}).parse(request.body);
+    const content = knowledgeContent(await liveKnowledge(db),input.path);
+    if (content === undefined) throw new AppError(404,'PG 中不存在该产品或销售项');
+    return {path:input.path,content};
+  });
+  app.post('/api/capability/graph',async request => {
+    requireUser(request);
+    const input = z.object({query:z.string().max(2000).default(''),limit:z.number().int().min(1).max(80).default(60)}).parse(request.body);
+    return knowledgeGraph(await liveKnowledge(db),input.query,input.limit);
   });
 }
