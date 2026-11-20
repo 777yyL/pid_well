@@ -1,9 +1,8 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
-import { randomBytes, createHash } from "node:crypto";
+import type { FastifyInstance } from "fastify";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { Database } from "./db.js";
-import { requireUser, tokenHash } from "./auth.js";
-import { AppError } from "./errors.js";
+import { requireUser } from "./auth.js";
 import { knowledgeSearchSchema, searchKnowledge } from "./knowledge-search.js";
 import { z } from "zod";
 
@@ -28,36 +27,6 @@ function detail(row: Record<string, unknown>) {
 }
 export function knowledgeSkillRoutes(app: FastifyInstance, db: Database) {
   const root = "/api/knowledge/skill";
-  async function authorize(req: FastifyRequest) {
-    const match = /^Bearer (pbk_[a-f0-9]{64})$/.exec(
-      req.headers.authorization ?? "",
-    );
-    if (
-      !match ||
-      !(
-        await db.query(
-          "SELECT 1 FROM knowledge_skill_tokens t JOIN users u ON u.id=t.user_id WHERE t.hash=$1 AND u.active",
-          [tokenHash(match[1])],
-        )
-      ).length
-    )
-      throw new AppError(401, "知识库只读令牌无效或已撤销");
-  }
-  app.post(root + "/token", async (req) => {
-    const user = requireUser(req),
-      token = "pbk_" + randomBytes(32).toString("hex");
-    await db.query(
-      "INSERT INTO knowledge_skill_tokens(user_id,hash) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET hash=excluded.hash",
-      [user.id, tokenHash(token)],
-    );
-    return { token };
-  });
-  app.delete(root + "/token", async (req) => {
-    await db.query("DELETE FROM knowledge_skill_tokens WHERE user_id=$1", [
-      requireUser(req).id,
-    ]);
-    return { ok: true };
-  });
   app.get(root + "/download", async (req, reply) => {
     requireUser(req);
     return reply
@@ -68,8 +37,7 @@ export function knowledgeSkillRoutes(app: FastifyInstance, db: Database) {
       .type("application/zip")
       .send(await readFile("agent/pingbiao-knowledge.zip"));
   });
-  app.get(root + "/products", async (req) => {
-    await authorize(req);
+  app.get(root + "/products", async () => {
     return {
       versions:
         await db.query(`SELECT p.product_id,p.product_code,p.name,p.summary,p.scenarios,p.boundaries,v.product_version_id,v.version,o.overview,
@@ -79,7 +47,6 @@ export function knowledgeSkillRoutes(app: FastifyInstance, db: Database) {
     };
   });
   app.get(root + "/catalog", async (req) => {
-    await authorize(req);
     const { versionId, limit, cursor, view } = z
       .object({
         versionId: z.string().min(1),
@@ -107,7 +74,6 @@ export function knowledgeSkillRoutes(app: FastifyInstance, db: Database) {
     };
   });
   app.post(root + "/items", async (req) => {
-    await authorize(req);
     const { ids, versionId } = z
       .object({
         ids: z.array(z.string().min(1)).min(1).max(100),
@@ -126,7 +92,6 @@ export function knowledgeSkillRoutes(app: FastifyInstance, db: Database) {
     };
   });
   app.post(root + "/search", async (req) => {
-    await authorize(req);
     return searchKnowledge(db, knowledgeSearchSchema.strict().parse(req.body));
   });
 }

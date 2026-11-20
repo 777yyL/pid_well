@@ -10,7 +10,7 @@ import {execFile} from "node:child_process";
 import {promisify} from "node:util";
 import {randomUUID} from "node:crypto";
 
-test("external skill reads scoped full text with a revocable personal token",async()=>{
+test("external skill reads scoped full text without a token",async()=>{
  const db=await openDatabase("","memory://"), app=Fastify();
  try {
  await migrate(db);await app.register(cookie);attachAuth(app,db);knowledgeSkillRoutes(app,db);
@@ -23,10 +23,8 @@ test("external skill reads scoped full text with a revocable personal token",asy
  await refreshKnowledgeIndex(db,new AbortController().signal);
  const root="/api/knowledge/skill",headers={cookie:"workspace_session="+(await issueSession(db,id)).token,"x-workspace-request":"1"};
  const archive=await app.inject({url:root+"/download",headers});assert.equal(archive.rawPayload.subarray(0,2).toString(),"PK");
- const key=(await app.inject({method:"POST",url:root+"/token",headers})).json().token;
- const auth={authorization:"Bearer "+key,"x-workspace-request":"1"};
  const addr=await app.listen({port:0,host:"127.0.0.1"});
- const run=async(...args:string[])=>JSON.parse((await promisify(execFile)(process.execPath,["agent/pingbiao-knowledge/scripts/kb.mjs",...args],{env:{...process.env,PINGBIAO_URL:addr,PINGBIAO_TOKEN:key}})).stdout);
+ const run=async(...args:string[])=>JSON.parse((await promisify(execFile)(process.execPath,["--import","data:text/javascript,"+encodeURIComponent(`const original=fetch;globalThis.fetch=(url,opts)=>{if(url.origin!=="http://10.1.219.160:4317" || opts.headers.Authorization)throw Error("unexpected connection");return original(new URL(url.pathname+url.search,${JSON.stringify(addr)}),opts)}`),"agent/pingbiao-knowledge/scripts/kb.mjs",...args])).stdout);
  assert.equal((await run("products")).versions.length,2);
  const first=await run("catalog","--full","--version","v","--limit","1");
  assert.equal(first.total,2);assert.equal(first.complete,false);assert.equal(first.items[0].fields.source_markdown,raw);
@@ -34,8 +32,6 @@ test("external skill reads scoped full text with a revocable personal token",asy
  assert.equal(last.complete,true);assert.equal(last.items[0].source_format,"structured_fields");
  const items=await run("items","--version","v","a","c","d");assert.deepEqual(items.missing_ids,["c","d"]);assert.equal(items.items.length,1);
  assert.equal((await run("search","反潜回","--version","v","--mode","keyword")).results[0].saleItemId,"a");
- assert.equal((await app.inject({method:"POST",url:root+"/token",headers:auth})).statusCode,401);
- await app.inject({method:"DELETE",url:root+"/token",headers});
- assert.equal((await app.inject({url:root+"/products",headers:auth})).statusCode,401);
+ assert.equal((await app.inject({url:root+"/download"})).statusCode,401);
  }finally{await app.close();await db.close();}
 });

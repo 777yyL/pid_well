@@ -15,9 +15,7 @@ async function main() {
     options,
     allowPositionals: true,
   });
-  if (!process.env.PINGBIAO_URL || !process.env.PINGBIAO_TOKEN)
-    throw Error("请设置 PINGBIAO_URL 和 PINGBIAO_TOKEN");
-  const url = new URL("/api/knowledge/skill/", process.env.PINGBIAO_URL);
+  const url = new URL("http://10.1.219.160:4317/api/knowledge/skill/");
   let route, body;
   if (command === "products") route = "products";
   else if (command === "catalog" && v.version) {
@@ -48,7 +46,6 @@ async function main() {
     method: body ? "POST" : "GET",
     redirect: "error",
     headers: {
-      Authorization: "Bearer " + process.env.PINGBIAO_TOKEN,
       "X-Workspace-Request": "1",
       "Content-Type": "application/json",
     },
