@@ -1,3 +1,4 @@
+import { KnowledgeSkillAccess } from "./KnowledgeSkillAccess";
 import { useEffect, useRef, useState } from "react";
 import {
   App,
@@ -167,7 +168,7 @@ export function CapabilitySearch() {
           <h1>能力检索</h1>
           <p>输入功能描述，快速查找对应销售项与所属产品。</p>
         </div>
-        <span className="capability-quick-label">PG 产品知识检索</span>
+        <KnowledgeSkillAccess />
       </header>
       <div className="capability-search-box">
         <Input.TextArea

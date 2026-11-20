@@ -33,6 +33,7 @@ export interface KnowledgeSale {
   name: string;
   description: string | null;
   specification_md: string | null;
+  source_markdown?: string | null;
   unit: string | null;
   price_type: string;
   fixed_price: string | number | null;

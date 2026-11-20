@@ -74,6 +74,7 @@ CREATE TABLE public.kb_sale_items (
     name               text NOT NULL CHECK (btrim(name) <> ''),
     description        text,
     specification_md   text,
+    source_markdown    text,
     unit               text,
     price_type         text NOT NULL DEFAULT 'unknown'
                        CHECK (price_type IN ('fixed', 'formula', 'inquiry', 'unknown')),

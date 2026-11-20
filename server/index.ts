@@ -17,6 +17,7 @@ import { projectRoutes } from "./projects.js";
 import { knowledgeRoutes } from "./product-knowledge.js";
 import { knowledgeAdminRoutes } from './knowledge-admin.js';
 import { startKnowledgeIndexer } from './knowledge-search.js';
+import { knowledgeSkillRoutes } from './knowledge-skill.js';
 import { capabilityRoutes } from "./capability-routes.js";
 export async function createApp(db: Database, serveWeb = false) {
   const app = Fastify({
@@ -58,6 +59,7 @@ export async function createApp(db: Database, serveWeb = false) {
   const runner = new AgentRunner(db);
   knowledgeRoutes(app, db);
   knowledgeAdminRoutes(app, db);
+  knowledgeSkillRoutes(app, db);
   const stopKnowledgeIndexer = startKnowledgeIndexer(db);
   app.addHook('onClose', stopKnowledgeIndexer);
   projectRoutes(app, db);

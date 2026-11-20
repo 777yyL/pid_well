@@ -87,6 +87,7 @@ const migrations = [
   `CREATE TABLE IF NOT EXISTS embedding_cache (cache_key text PRIMARY KEY, embedding jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, username text UNIQUE NOT NULL, display_name text NOT NULL, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('admin','member')), active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now())`,
+  `CREATE TABLE IF NOT EXISTS knowledge_skill_tokens(user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, hash text NOT NULL UNIQUE)`,
   `CREATE TABLE IF NOT EXISTS sessions (hash text PRIMARY KEY, user_id uuid NOT NULL REFERENCES users(id), expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`,
   `CREATE TABLE IF NOT EXISTS settings (id integer PRIMARY KEY CHECK(id=1), value jsonb NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS user_agent_settings (user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, value jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now())`,

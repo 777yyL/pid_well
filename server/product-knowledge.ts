@@ -66,6 +66,8 @@ export async function migrateProductKnowledge(db: Database) {
     const columns = await tx.query<{ table_name: string; column_name: string }>(
       `SELECT table_name,column_name FROM information_schema.columns WHERE table_schema='public'`,
     );
+    if (!columns.some(c => c.table_name === 'kb_sale_items' && c.column_name === 'source_markdown'))
+      await tx.query("ALTER TABLE public.kb_sale_items ADD COLUMN IF NOT EXISTS source_markdown text");
     for (const [table, names] of Object.entries(expected))
       for (const name of names)
         if (

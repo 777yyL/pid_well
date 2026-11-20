@@ -89,6 +89,7 @@ export const knowledgeEntities = {
         name: id,
         description: text,
         specification_md: text,
+        source_markdown: z.string().nullable().optional(),
         unit: text,
         price_type: z
           .enum(["fixed", "formula", "inquiry", "unknown"])
